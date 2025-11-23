@@ -23,6 +23,10 @@ else:
 
 IDA_HOST = "127.0.0.1"
 IDA_PORT = 13337
+# Timeout for forwarding calls from the outer CLI to the in-IDA HTTP server.
+# Some IDA operations (e.g., large searches) can legitimately take many seconds,
+# so keep this generous to avoid spurious timeouts.
+FORWARD_TIMEOUT = 600
 
 mcp = McpServer("ida-pro-mcp")
 dispatch_original = mcp.registry.dispatch
@@ -40,7 +44,7 @@ def dispatch_proxy(request: dict | str | bytes | bytearray) -> JsonRpcResponse |
     elif request_obj["method"].startswith("notifications/"):
         return dispatch_original(request)
 
-    conn = http.client.HTTPConnection(IDA_HOST, IDA_PORT, timeout=1)
+    conn = http.client.HTTPConnection(IDA_HOST, IDA_PORT, timeout=FORWARD_TIMEOUT)
     try:
         if isinstance(request, dict):
             request = json.dumps(request)
@@ -176,6 +180,29 @@ def print_mcp_config():
             {"mcpServers": {mcp.name: generate_mcp_config(stdio=True)}}, indent=2
         )
     )
+
+
+def _apply_timeout_defaults(client_name: str, is_toml: bool, entry: dict):
+    """Augment a per-server config entry with client-specific timeout knobs."""
+    # Codex CLI (TOML) supports startup/tool timeouts
+    if client_name == "Codex":
+        entry.setdefault("startup_timeout_sec", 30)
+        entry.setdefault("tool_timeout_sec", 600)
+        return
+
+    # Claude Desktop / Claude Code expect env vars for timeouts (ms)
+    if client_name in ("Claude", "Claude Code"):
+        env = entry.setdefault("env", {})
+        env.setdefault("MCP_TIMEOUT", "600000")
+        env.setdefault("MCP_TOOL_TIMEOUT", "600000")
+        return
+
+    # Cline and Roo Code have a per-server timeout field (seconds)
+    if client_name in ("Cline", "Roo Code"):
+        entry.setdefault("timeout", 600)
+        return
+
+    # Other clients: no documented timeout field; leave untouched
 
 
 def install_mcp_servers(*, stdio: bool = False, uninstall=False, quiet=False):
@@ -675,6 +702,7 @@ def install_mcp_servers(*, stdio: bool = False, uninstall=False, quiet=False):
             del mcp_servers[mcp.name]
         else:
             mcp_servers[mcp.name] = generate_mcp_config(stdio=stdio)
+            _apply_timeout_defaults(name, is_toml, mcp_servers[mcp.name])
 
         # Atomic write: temp file + rename
         suffix = ".toml" if is_toml else ".json"
