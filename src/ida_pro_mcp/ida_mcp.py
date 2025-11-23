@@ -43,6 +43,42 @@ class MCP(idaapi.plugin_t):
             f"[MCP] Plugin loaded, use Edit -> Plugins -> MCP ({hotkey}) to start the server"
         )
         self.mcp: "ida_mcp.rpc.McpServer | None" = None
+
+        # Auto-start the MCP server when an IDB is available. If a database is
+        # already open at plugin init time, start immediately; otherwise register
+        # a one-shot notify_when handler for the next NW_OPENIDB event.
+        import ida_idaapi
+        try:
+            import ida_nalt
+        except Exception:  # pragma: no cover - defensive for older IDA builds
+            ida_nalt = None
+
+        _get_root_filename = None
+        if ida_nalt and hasattr(ida_nalt, "get_root_filename"):
+            _get_root_filename = ida_nalt.get_root_filename
+        elif hasattr(idaapi, "get_root_filename"):
+            _get_root_filename = idaapi.get_root_filename
+
+        def _start_once():
+            if self.mcp:
+                return
+            self.run(0)
+
+        def _autostart(nw_code, is_old_db=False):  # noqa: ARG001 (signature fixed by IDA)
+            ida_idaapi.notify_when(ida_idaapi.NW_OPENIDB | ida_idaapi.NW_REMOVE, _autostart)
+            _start_once()
+
+        root_loaded = False
+        try:
+            if _get_root_filename and _get_root_filename():
+                root_loaded = True
+        except Exception:
+            root_loaded = False
+
+        if root_loaded:
+            _start_once()
+        else:
+            ida_idaapi.notify_when(ida_idaapi.NW_OPENIDB, _autostart)
         return idaapi.PLUGIN_KEEP
 
     def run(self, arg):
