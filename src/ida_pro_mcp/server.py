@@ -5,6 +5,7 @@ import shutil
 import argparse
 import http.client
 import tempfile
+import traceback
 import tomllib
 import tomli_w
 from typing import TYPE_CHECKING
@@ -55,6 +56,7 @@ def dispatch_proxy(request: dict | str | bytes | bytearray) -> JsonRpcResponse |
         data = response.read().decode()
         return json.loads(data)
     except Exception as e:
+        full_info = traceback.format_exc()
         id = request_obj.get("id")
         if id is None:
             return None  # Notification, no response needed
@@ -68,7 +70,7 @@ def dispatch_proxy(request: dict | str | bytes | bytearray) -> JsonRpcResponse |
                 "jsonrpc": "2.0",
                 "error": {
                     "code": -32000,
-                    "message": f"Failed to connect to IDA Pro! Did you run Edit -> Plugins -> MCP ({shortcut}) to start the server?",
+                    "message": f"Failed to connect to IDA Pro! Did you run Edit -> Plugins -> MCP ({shortcut}) to start the server?\n{full_info}",
                     "data": str(e),
                 },
                 "id": id,
