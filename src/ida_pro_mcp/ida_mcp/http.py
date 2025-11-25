@@ -2,8 +2,9 @@ import html
 import json
 import re
 import ida_netnode
+import ida_kernwin
 from urllib.parse import urlparse, parse_qs
-from typing import TypeVar, cast
+from typing import Any, TypeVar, cast
 from http.server import HTTPServer
 
 from .sync import idasync
@@ -14,6 +15,34 @@ from .rpc import (
     MCP_UNSAFE,
     get_cached_output,
 )
+
+
+def _mcp_action_logger(action_type: str, name: str, arguments: dict | None, result: Any, is_error: bool):
+    """Log MCP actions to IDA's output window."""
+    # Format arguments concisely
+    args_str = ""
+    if arguments:
+        # Show argument keys with truncated values
+        args_parts = []
+        for k, v in arguments.items():
+            v_str = str(v)
+            if len(v_str) > 40:
+                v_str = v_str[:37] + "..."
+            args_parts.append(f"{k}={v_str}")
+        args_str = ", ".join(args_parts)
+
+    if is_error:
+        # Truncate error message if too long
+        error_str = str(result)
+        if len(error_str) > 100:
+            error_str = error_str[:97] + "..."
+        ida_kernwin.msg(f"[MCP] {action_type} ERROR: {name}({args_str}) -> {error_str}\n")
+    else:
+        ida_kernwin.msg(f"[MCP] {action_type}: {name}({args_str})\n")
+
+
+# Enable MCP action logging to IDA output
+MCP_SERVER.set_action_callback(_mcp_action_logger)
 
 
 T = TypeVar("T")
