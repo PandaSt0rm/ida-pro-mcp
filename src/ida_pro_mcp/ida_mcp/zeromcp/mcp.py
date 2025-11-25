@@ -213,6 +213,7 @@ class McpServer:
         self._running = False
         self._sse_connections: dict[str, _McpSseConnection] = {}
         self._protocol_version = threading.local()
+        self._on_action: Callable[[str, str, dict | None, Any, bool], None] | None = None
 
         # Register MCP protocol methods with correct names
         self.registry = JsonRpcRegistry()
@@ -223,6 +224,19 @@ class McpServer:
         self.registry.methods["resources/list"] = self._mcp_resources_list
         self.registry.methods["resources/templates/list"] = self._mcp_resource_templates_list
         self.registry.methods["resources/read"] = self._mcp_resources_read
+
+    def set_action_callback(self, callback: Callable[[str, str, dict | None, Any, bool], None] | None):
+        """Set a callback to be invoked when tools/resources are called.
+
+        Args:
+            callback: Function(action_type, name, arguments, result, is_error) or None to disable.
+                - action_type: "tool" or "resource"
+                - name: Name of the tool/resource
+                - arguments: Arguments dict passed to the call (None if no args)
+                - result: The result or error message
+                - is_error: True if the call resulted in an error
+        """
+        self._on_action = callback
 
     def tool(self, func: Callable) -> Callable:
         return self.tools.method(func)
@@ -371,12 +385,17 @@ class McpServer:
         # Check for error response
         if tool_response and "error" in tool_response:
             error = tool_response["error"]
+            error_msg = error.get("message", "Unknown error")
+            if self._on_action:
+                self._on_action("tool", name, arguments, error_msg, True)
             return {
-                "content": [{"type": "text", "text": error.get("message", "Unknown error")}],
+                "content": [{"type": "text", "text": error_msg}],
                 "isError": True,
             }
 
         result = tool_response.get("result") if tool_response else None
+        if self._on_action:
+            self._on_action("tool", name, arguments, result, False)
         return {
             "content": [{"type": "text", "text": json.dumps(result, indent=2)}],
             "structuredContent": result if isinstance(result, dict) else {"result": result},
@@ -446,16 +465,21 @@ class McpServer:
 
                 if tool_response and "error" in tool_response:
                     error = tool_response["error"]
+                    error_msg = error.get("message", "Unknown error")
+                    if self._on_action:
+                        self._on_action("resource", uri, {"params": params}, error_msg, True)
                     return {
                         "contents": [{
                             "uri": uri,
                             "mimeType": "application/json",
-                            "text": json.dumps({"error": error.get("message", "Unknown error")}, indent=2),
+                            "text": json.dumps({"error": error_msg}, indent=2),
                         }],
                         "isError": True,
                     }
 
                 result = tool_response.get("result") if tool_response else None
+                if self._on_action:
+                    self._on_action("resource", uri, {"params": params}, result, False)
                 return {
                     "contents": [{
                         "uri": uri,
@@ -466,6 +490,8 @@ class McpServer:
 
         # No matching resource found
         available: list[str] = [getattr(f, "__resource_uri__") for f in self.resources.methods.values()]
+        if self._on_action:
+            self._on_action("resource", uri, None, f"Resource not found: {uri}", True)
         return {
             "contents": [{
                 "uri": uri,
