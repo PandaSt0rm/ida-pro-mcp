@@ -280,7 +280,7 @@ def rename(batch: RenameBatch) -> dict:
                             "old": item["old"],
                             "new": item["new"],
                             "ok": False,
-                            "error": "No function found",
+                            "error": f"No function at specified address. Use list_funcs to find valid function addresses.",
                         }
                     )
                     continue
@@ -314,7 +314,7 @@ def rename(batch: RenameBatch) -> dict:
                             "old": item["old"],
                             "new": item["new"],
                             "ok": False,
-                            "error": "No function found",
+                            "error": f"No function at specified address. Use list_funcs to find valid function addresses.",
                         }
                     )
                     continue
@@ -327,7 +327,7 @@ def rename(batch: RenameBatch) -> dict:
                             "old": item["old"],
                             "new": item["new"],
                             "ok": False,
-                            "error": "No frame",
+                            "error": "Function has no stack frame (may be a thunk or leaf function)",
                         }
                     )
                     continue
@@ -388,7 +388,7 @@ def rename(batch: RenameBatch) -> dict:
                 results.append({"func_addr": item.get("func_addr"), "error": str(e)})
         return results
 
-    # Process each category
+    # Process each category (keys match RenameBatch TypedDict)
     result = {}
     if "func" in batch:
         result["func"] = _rename_funcs(_normalize_items(batch["func"]))

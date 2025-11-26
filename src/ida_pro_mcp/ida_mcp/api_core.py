@@ -112,10 +112,10 @@ def lookup_funcs(
                     results.append({"query": query, "fn": func, "error": None})
                 else:
                     results.append(
-                        {"query": query, "fn": None, "error": "Not a function"}
+                        {"query": query, "fn": None, "error": f"Address {hex(ea)} exists but is not a function. Use list_funcs to find valid functions."}
                     )
             else:
-                results.append({"query": query, "fn": None, "error": "Not found"})
+                results.append({"query": query, "fn": None, "error": f"No function or symbol found matching '{query}'. Use list_funcs or list_globals to search."})
         except Exception as e:
             results.append({"query": query, "fn": None, "error": str(e)})
 

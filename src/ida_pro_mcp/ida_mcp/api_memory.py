@@ -211,7 +211,7 @@ def get_global_value(
                 ea = idaapi.get_name_ea(idaapi.BADADDR, query)
 
             if ea == idaapi.BADADDR:
-                results.append({"query": query, "value": None, "error": "Not found"})
+                results.append({"query": query, "value": None, "error": f"Global '{query}' not found. Use list_globals to search for valid names."})
                 continue
 
             value = get_global_variable_value_internal(ea)
