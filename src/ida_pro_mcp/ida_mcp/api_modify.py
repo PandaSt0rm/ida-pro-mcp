@@ -224,7 +224,7 @@ def rename(batch: RenameBatch) -> dict:
                             "old": item["old"],
                             "new": item["new"],
                             "ok": False,
-                            "error": "No function found",
+                            "error": f"No function at specified address. Use list_funcs to find valid function addresses.",
                         }
                     )
                     continue
@@ -258,7 +258,7 @@ def rename(batch: RenameBatch) -> dict:
                             "old": item["old"],
                             "new": item["new"],
                             "ok": False,
-                            "error": "No function found",
+                            "error": f"No function at specified address. Use list_funcs to find valid function addresses.",
                         }
                     )
                     continue
@@ -271,7 +271,7 @@ def rename(batch: RenameBatch) -> dict:
                             "old": item["old"],
                             "new": item["new"],
                             "ok": False,
-                            "error": "No frame",
+                            "error": "Function has no stack frame (may be a thunk or leaf function)",
                         }
                     )
                     continue
@@ -332,14 +332,14 @@ def rename(batch: RenameBatch) -> dict:
                 results.append({"func_addr": item.get("func_addr"), "error": str(e)})
         return results
 
-    # Process each category
+    # Process each category (keys match RenameBatch TypedDict)
     result = {}
-    if "functions" in batch:
-        result["functions"] = _rename_funcs(_normalize_items(batch["functions"]))
-    if "globals" in batch:
-        result["globals"] = _rename_globals(_normalize_items(batch["globals"]))
-    if "locals" in batch:
-        result["locals"] = _rename_locals(_normalize_items(batch["locals"]))
+    if "func" in batch:
+        result["func"] = _rename_funcs(_normalize_items(batch["func"]))
+    if "data" in batch:
+        result["data"] = _rename_globals(_normalize_items(batch["data"]))
+    if "local" in batch:
+        result["local"] = _rename_locals(_normalize_items(batch["local"]))
     if "stack" in batch:
         result["stack"] = _rename_stack(_normalize_items(batch["stack"]))
 

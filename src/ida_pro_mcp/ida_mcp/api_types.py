@@ -1,4 +1,4 @@
-from typing import Annotated
+from typing import Annotated, get_args
 
 import ida_typeinf
 import ida_hexrays
@@ -21,6 +21,7 @@ from .utils import (
     StructureDefinition,
     StructRead,
     TypeApplication,
+    TypeApplicationKind,
 )
 
 
@@ -423,7 +424,7 @@ def apply_types(applications: list[TypeApplication] | TypeApplication) -> list[d
 
                 frame_tif = ida_typeinf.tinfo_t()
                 if not ida_frame.get_func_frame(frame_tif, func):
-                    results.append({"edit": app, "error": "No frame"})
+                    results.append({"edit": app, "error": "Function has no stack frame (may be a thunk or leaf function)"})
                     continue
 
                 idx, udm = frame_tif.get_udm(app["name"])
@@ -447,7 +448,7 @@ def apply_types(applications: list[TypeApplication] | TypeApplication) -> list[d
                 )
 
             else:
-                results.append({"edit": app, "error": f"Unknown kind: {kind}"})
+                results.append({"edit": app, "error": f"Unknown kind: {kind}. Valid kinds: {', '.join(get_args(TypeApplicationKind))}"})
 
         except Exception as e:
             results.append({"edit": app, "error": str(e)})

@@ -1,4 +1,4 @@
-from typing import Annotated, Optional
+from typing import Annotated, Literal, Optional, get_args
 import ida_hexrays
 import ida_kernwin
 import ida_lines
@@ -917,13 +917,13 @@ def find_paths(queries: list[PathQuery] | PathQuery) -> list[dict]:
 # Search Operations
 # ============================================================================
 
+SearchType = Literal["string", "immediate", "data_ref", "code_ref"]
+
 
 @tool
 @idaread
 def search(
-    type: Annotated[
-        str, "Search type: 'string', 'immediate', 'data_ref', or 'code_ref'"
-    ],
+    type: Annotated[SearchType, "Search type: 'string', 'immediate', 'data_ref', or 'code_ref'"],
     targets: Annotated[
         list[str | int] | str | int, "Search targets (strings, integers, or addresses)"
     ],
@@ -1081,7 +1081,7 @@ def search(
                 "matches": [],
                 "count": 0,
                 "cursor": {"done": True},
-                "error": f"Unknown search type: {type}",
+                "error": f"Unknown search type: {type}. Valid types: {', '.join(get_args(SearchType))}",
             }
         )
 
@@ -1191,16 +1191,19 @@ def _find_insn_pattern(pattern: dict) -> list[str]:
 # Export Operations
 # ============================================================================
 
+ExportFormat = Literal["json", "c_header", "prototypes"]
+
 
 @tool
 @idaread
 def export_funcs(
     addrs: Annotated[list[str] | str, "Function addresses to export"],
-    format: Annotated[
-        str, "Export format: json (default), c_header, or prototypes"
-    ] = "json",
+    format: Annotated[ExportFormat, "Export format: json (default), c_header, or prototypes"] = "json",
 ) -> dict:
     """Export function data in various formats"""
+    if format not in get_args(ExportFormat):
+        return {"error": f"Unknown format: {format}. Valid formats: {', '.join(get_args(ExportFormat))}"}
+
     addrs = normalize_list_input(addrs)
     results = []
 
