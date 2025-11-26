@@ -4,7 +4,7 @@ import os
 import threading
 import time
 import traceback
-from typing import Any, Callable, get_type_hints, get_origin, get_args, Union, TypedDict, TypeAlias, NotRequired, is_typeddict
+from typing import Any, Callable, Literal, get_type_hints, get_origin, get_args, Union, TypedDict, TypeAlias, NotRequired, is_typeddict
 from types import UnionType
 
 JsonRpcId: TypeAlias = str | int | float | None
@@ -72,6 +72,29 @@ _LOG_SKIP_METHODS = {
     if m.strip()
 }
 JsonRpcParams: TypeAlias = dict[str, Any] | list[Any] | None
+
+
+def _format_type_name(t: Any) -> str:
+    """Format a type for display in error messages"""
+    from typing import Annotated
+    origin = get_origin(t)
+    # Unwrap Annotated types
+    if origin is Annotated:
+        return _format_type_name(get_args(t)[0])
+    if origin is list:
+        inner = get_args(t)
+        if inner:
+            return f"list[{_format_type_name(inner[0])}]"
+        return "list"
+    if is_typeddict(t):
+        # Show TypedDict name and its fields
+        hints = {k: v for k, v in getattr(t, '__annotations__', {}).items()}
+        fields = ", ".join(f"{k}: {_format_type_name(v)}" for k, v in hints.items())
+        return f"{t.__name__}{{{fields}}}"
+    if hasattr(t, '__name__'):
+        return t.__name__
+    return str(t)
+
 
 class JsonRpcRequest(TypedDict):
     jsonrpc: str
@@ -306,23 +329,37 @@ class JsonRpcRegistry:
                         arg_origin = get_origin(arg_type)
                         check_type = arg_origin if arg_origin is not None else arg_type
 
-                        # TypedDict cannot be used with isinstance - check for dict instead
+                        # TypedDict: check it's a dict AND has required fields
                         if is_typeddict(arg_type):
-                            check_type = dict
+                            if isinstance(value, dict):
+                                required_keys = getattr(arg_type, '__required_keys__', set())
+                                if required_keys <= set(value.keys()):
+                                    type_matched = True
+                                    break
+                            continue
 
                         if isinstance(value, check_type):
                             type_matched = True
                             break
 
                     if not type_matched:
-                        raise JsonRpcException(-32602, "Invalid params: expected {} for {}, got {}".format(
-                            " | ".join(
-                                t.__name__ if isinstance(t, type) else str(t)
-                                for t in args
-                            ),
-                            param_name,
-                            type(value).__name__
-                        ))
+                        expected_types = [_format_type_name(t) for t in args if t is not type(None)]
+                        hint = ""
+                        # Detect likely double-encoded JSON
+                        if isinstance(value, str) and value.strip().startswith(('[', '{')):
+                            hint = " (value looks like JSON string - don't stringify objects, pass them directly)"
+                        raise JsonRpcException(-32602, f"Invalid params: {param_name} expected {' | '.join(expected_types)}, got {type(value).__name__}{hint}")
+                    validated_params[param_name] = value
+                    continue
+
+                # Handle Literal types
+                if origin is Literal:
+                    allowed_values = args
+                    if value not in allowed_values:
+                        raise JsonRpcException(
+                            -32602,
+                            f"Invalid params: {param_name} must be one of {', '.join(repr(v) for v in allowed_values)}, got {value!r}"
+                        )
                     validated_params[param_name] = value
                     continue
 
@@ -339,9 +376,20 @@ class JsonRpcRegistry:
                 # Handle TypedDict (must check before basic types)
                 if is_typeddict(expected_type):
                     if not isinstance(value, dict):
+                        hint = ""
+                        if isinstance(value, str) and value.strip().startswith(('[', '{')):
+                            hint = " (value looks like JSON string - don't stringify objects, pass them directly)"
                         raise JsonRpcException(
                             -32602,
-                            f"Invalid params: {param_name} expected dict, got {type(value).__name__}"
+                            f"Invalid params: {param_name} expected {_format_type_name(expected_type)}, got {type(value).__name__}{hint}"
+                        )
+                    # Check required fields
+                    required_keys = getattr(expected_type, '__required_keys__', set())
+                    missing = required_keys - set(value.keys())
+                    if missing:
+                        raise JsonRpcException(
+                            -32602,
+                            f"Invalid params: {param_name} missing required fields: {', '.join(sorted(missing))}. Expected {_format_type_name(expected_type)}"
                         )
                     validated_params[param_name] = value
                     continue

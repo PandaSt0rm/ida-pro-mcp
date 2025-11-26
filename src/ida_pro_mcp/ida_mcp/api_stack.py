@@ -63,7 +63,7 @@ def declare_stack(
             func = idaapi.get_func(parse_address(fn_addr))
             if not func:
                 results.append(
-                    {"addr": fn_addr, "name": var_name, "error": "No function found"}
+                    {"addr": fn_addr, "name": var_name, "error": f"No function at {fn_addr}. Use list_funcs to find valid function addresses."}
                 )
                 continue
 
@@ -72,14 +72,14 @@ def declare_stack(
             frame_tif = ida_typeinf.tinfo_t()
             if not ida_frame.get_func_frame(frame_tif, func):
                 results.append(
-                    {"addr": fn_addr, "name": var_name, "error": "No frame returned"}
+                    {"addr": fn_addr, "name": var_name, "error": "Function has no stack frame (may be a thunk or leaf function)"}
                 )
                 continue
 
             tif = get_type_by_name(type_name)
             if not ida_frame.define_stkvar(func, var_name, ea, tif):
                 results.append(
-                    {"addr": fn_addr, "name": var_name, "error": "Failed to define"}
+                    {"addr": fn_addr, "name": var_name, "error": f"Failed to define stack variable. Check offset {offset} is valid and type '{type_name}' exists."}
                 )
                 continue
 
@@ -107,14 +107,14 @@ def delete_stack(
             func = idaapi.get_func(parse_address(fn_addr))
             if not func:
                 results.append(
-                    {"addr": fn_addr, "name": var_name, "error": "No function found"}
+                    {"addr": fn_addr, "name": var_name, "error": f"No function at {fn_addr}. Use list_funcs to find valid function addresses."}
                 )
                 continue
 
             frame_tif = ida_typeinf.tinfo_t()
             if not ida_frame.get_func_frame(frame_tif, func):
                 results.append(
-                    {"addr": fn_addr, "name": var_name, "error": "No frame returned"}
+                    {"addr": fn_addr, "name": var_name, "error": "Function has no stack frame (may be a thunk or leaf function)"}
                 )
                 continue
 
@@ -124,7 +124,7 @@ def delete_stack(
                     {
                         "addr": fn_addr,
                         "name": var_name,
-                        "error": f"{var_name} not found",
+                        "error": f"Stack variable '{var_name}' not found. Use stack_frame to list existing variables.",
                     }
                 )
                 continue
@@ -135,7 +135,7 @@ def delete_stack(
                     {
                         "addr": fn_addr,
                         "name": var_name,
-                        "error": f"{var_name} is special frame member",
+                        "error": f"'{var_name}' is a special frame member (return address or saved registers) and cannot be deleted",
                     }
                 )
                 continue
@@ -149,14 +149,14 @@ def delete_stack(
                     {
                         "addr": fn_addr,
                         "name": var_name,
-                        "error": f"{var_name} is argument member",
+                        "error": f"'{var_name}' is a function argument and cannot be deleted from the stack frame",
                     }
                 )
                 continue
 
             if not ida_frame.delete_frame_members(func, offset, offset + size):
                 results.append(
-                    {"addr": fn_addr, "name": var_name, "error": "Failed to delete"}
+                    {"addr": fn_addr, "name": var_name, "error": f"Failed to delete '{var_name}' from stack frame"}
                 )
                 continue
 

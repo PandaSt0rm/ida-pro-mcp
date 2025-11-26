@@ -203,13 +203,16 @@ class StructRead(TypedDict, total=False):
     ]
 
 
-class TypeEdit(TypedDict, total=False):
+TypeApplicationKind = Literal["function", "global", "local", "stack"]
+
+
+class TypeApplication(TypedDict, total=False):
     """Type application operation"""
 
     addr: Annotated[str, "Memory address"]
     name: Annotated[str, "Variable/function name"]
     ty: Annotated[str, "Type name or declaration"]
-    kind: Annotated[str, "Type of entity (auto-detected if omitted)"]
+    kind: Annotated[TypeApplicationKind, "Type of entity (auto-detected if omitted)"]
     signature: Annotated[str, "Function signature (for kind=function)"]
     variable: Annotated[str, "Local variable name (for kind=local)"]
 
