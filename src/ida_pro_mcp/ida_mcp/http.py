@@ -212,6 +212,30 @@ class IdaMcpHttpRequestHandler(McpHttpRequestHandler):
             return False
         return True
 
+    def _check_origin(self) -> bool:
+        """
+        Prevents CSRF and DNS rebinding attacks by ensuring POST requests
+        originate from pages served by this server, not external websites.
+        """
+        origin = self.headers.get("Origin")
+        port = cast(HTTPServer, self.server).server_port
+        if origin not in (f"http://127.0.0.1:{port}", f"http://localhost:{port}"):
+            self.send_error(403, "Invalid Origin")
+            return False
+        return True
+
+    def _check_host(self) -> bool:
+        """
+        Prevents DNS rebinding attacks where an attacker's domain (e.g., evil.com)
+        resolves to 127.0.0.1, allowing their page to read localhost resources.
+        """
+        host = self.headers.get("Host")
+        port = cast(HTTPServer, self.server).server_port
+        if host not in (f"127.0.0.1:{port}", f"localhost:{port}"):
+            self.send_error(403, "Invalid Host")
+            return False
+        return True
+
     def _send_html(self, status: int, text: str):
         """
         Prevents clickjacking by blocking iframes (X-Frame-Options for older
