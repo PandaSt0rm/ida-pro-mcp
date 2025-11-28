@@ -1,4 +1,4 @@
-from typing import Annotated
+from typing import Annotated, Literal
 
 import idaapi
 import idautils
@@ -11,9 +11,12 @@ import ida_nalt
 import ida_segment
 import ida_typeinf
 import ida_frame
+import ida_lines
+import ida_offset
+import ida_kernwin
 
 from .rpc import tool
-from .sync import idawrite, IDAError
+from .sync import idawrite, idaread, IDAError
 from .utils import (
     parse_address,
     decompile_checked,
@@ -1461,3 +1464,390 @@ def delete_segment(
             }
     except Exception as e:
         return {"addr": addr, "ok": False, "error": str(e)}
+
+
+# ============================================================================
+# Item Colors
+# ============================================================================
+
+
+@tool
+@idawrite
+def set_color(
+    addrs: Annotated[list[str] | str, "Addresses to set color for"],
+    color: Annotated[int, "RGB color value (e.g., 0xFFFF00 for yellow). Use 0xFFFFFFFF to reset to default."],
+) -> list[dict]:
+    """Set background color for items (instructions/data).
+
+    Color is in RGB format (0xBBGGRR in IDA's internal format).
+    Use 0xFFFFFFFF to reset to default color.
+    """
+    addrs = normalize_list_input(addrs)
+    results = []
+
+    for addr in addrs:
+        try:
+            ea = parse_address(addr)
+            ida_nalt.set_item_color(ea, color)
+            results.append({"addr": addr, "color": hex(color), "ok": True, "error": None})
+        except Exception as e:
+            results.append({"addr": addr, "ok": False, "error": str(e)})
+
+    return results
+
+
+@tool
+@idaread
+def get_color(
+    addrs: Annotated[list[str] | str, "Addresses to get color for"],
+) -> list[dict]:
+    """Get background color of items (instructions/data)."""
+    addrs = normalize_list_input(addrs)
+    results = []
+
+    for addr in addrs:
+        try:
+            ea = parse_address(addr)
+            color = ida_nalt.get_item_color(ea)
+            results.append({
+                "addr": addr,
+                "color": hex(color) if color != 0xFFFFFFFF else None,
+                "has_color": color != 0xFFFFFFFF,
+                "error": None,
+            })
+        except Exception as e:
+            results.append({"addr": addr, "color": None, "has_color": False, "error": str(e)})
+
+    return results
+
+
+# ============================================================================
+# Operand Type Changes
+# ============================================================================
+
+
+@tool
+@idawrite
+def op_offset(
+    addrs: Annotated[list[str] | str, "Addresses to change operand to offset"],
+    operand: Annotated[int, "Operand number (0=first, 1=second, -1=all)"] = 0,
+    base: Annotated[str | None, "Base address for offset (default: auto-detect)"] = None,
+) -> list[dict]:
+    """Make an operand an offset (pointer).
+
+    Converts numeric operand to display as an offset/reference to another address.
+    """
+    addrs = normalize_list_input(addrs)
+    results = []
+
+    for addr in addrs:
+        try:
+            ea = parse_address(addr)
+            base_ea = parse_address(base) if base else 0
+
+            if idc.op_plain_offset(ea, operand, base_ea):
+                results.append({"addr": addr, "operand": operand, "ok": True, "error": None})
+            else:
+                results.append({"addr": addr, "operand": operand, "ok": False, "error": "Failed to set offset"})
+        except Exception as e:
+            results.append({"addr": addr, "operand": operand, "ok": False, "error": str(e)})
+
+    return results
+
+
+@tool
+@idawrite
+def op_number(
+    addrs: Annotated[list[str] | str, "Addresses to change operand representation"],
+    operand: Annotated[int, "Operand number (0=first, 1=second, -1=all)"] = 0,
+    radix: Annotated[Literal["hex", "dec", "oct", "bin", "char"], "Number representation"] = "hex",
+) -> list[dict]:
+    """Change operand number representation.
+
+    Changes how a numeric operand is displayed (hex, decimal, octal, binary, or char).
+    """
+    addrs = normalize_list_input(addrs)
+    results = []
+
+    for addr in addrs:
+        try:
+            ea = parse_address(addr)
+
+            success = False
+            if radix == "hex":
+                success = idc.op_hex(ea, operand)
+            elif radix == "dec":
+                success = idc.op_dec(ea, operand)
+            elif radix == "oct":
+                success = idc.op_oct(ea, operand)
+            elif radix == "bin":
+                success = idc.op_bin(ea, operand)
+            elif radix == "char":
+                success = idc.op_chr(ea, operand)
+
+            if success:
+                results.append({"addr": addr, "operand": operand, "radix": radix, "ok": True, "error": None})
+            else:
+                results.append({"addr": addr, "operand": operand, "radix": radix, "ok": False, "error": "Failed to change representation"})
+        except Exception as e:
+            results.append({"addr": addr, "operand": operand, "radix": radix, "ok": False, "error": str(e)})
+
+    return results
+
+
+@tool
+@idawrite
+def clr_op_type(
+    addrs: Annotated[list[str] | str, "Addresses to clear operand type"],
+    operand: Annotated[int, "Operand number (0=first, 1=second, -1=all)"] = 0,
+) -> list[dict]:
+    """Clear operand type/representation, reverting to default."""
+    addrs = normalize_list_input(addrs)
+    results = []
+
+    for addr in addrs:
+        try:
+            ea = parse_address(addr)
+            if ida_bytes.clr_op_type(ea, operand):
+                results.append({"addr": addr, "operand": operand, "ok": True, "error": None})
+            else:
+                results.append({"addr": addr, "operand": operand, "ok": False, "error": "Failed to clear operand type"})
+        except Exception as e:
+            results.append({"addr": addr, "operand": operand, "ok": False, "error": str(e)})
+
+    return results
+
+
+# ============================================================================
+# Function Comments
+# ============================================================================
+
+
+@tool
+@idawrite
+def set_func_cmt(
+    addrs: Annotated[list[str] | str, "Function addresses to set comment for"],
+    comment: Annotated[str, "Comment text"],
+    repeatable: Annotated[bool, "Repeatable comment (shown at call sites)"] = False,
+) -> list[dict]:
+    """Set a function-level comment.
+
+    Function comments appear at the function header, not at specific addresses.
+    Repeatable function comments are also shown at call sites.
+    """
+    addrs = normalize_list_input(addrs)
+    results = []
+
+    for addr in addrs:
+        try:
+            ea = parse_address(addr)
+
+            # Get function containing address
+            func = idaapi.get_func(ea)
+            if not func:
+                results.append({
+                    "addr": addr,
+                    "ok": False,
+                    "error": f"No function at {hex(ea)}",
+                })
+                continue
+
+            # Set the function comment
+            if idc.set_func_cmt(func.start_ea, comment, repeatable):
+                results.append({
+                    "addr": addr,
+                    "function": ida_funcs.get_func_name(func.start_ea),
+                    "repeatable": repeatable,
+                    "ok": True,
+                    "error": None,
+                })
+            else:
+                results.append({
+                    "addr": addr,
+                    "ok": False,
+                    "error": "Failed to set function comment",
+                })
+        except Exception as e:
+            results.append({"addr": addr, "ok": False, "error": str(e)})
+
+    return results
+
+
+@tool
+@idaread
+def get_func_cmt(
+    addrs: Annotated[list[str] | str, "Function addresses to get comment for"],
+    repeatable: Annotated[bool, "Get repeatable comment (vs regular)"] = False,
+) -> list[dict]:
+    """Get function-level comments."""
+    addrs = normalize_list_input(addrs)
+    results = []
+
+    for addr in addrs:
+        try:
+            ea = parse_address(addr)
+
+            # Get function containing address
+            func = idaapi.get_func(ea)
+            if not func:
+                results.append({
+                    "addr": addr,
+                    "comment": None,
+                    "error": f"No function at {hex(ea)}",
+                })
+                continue
+
+            comment = idc.get_func_cmt(func.start_ea, repeatable)
+            results.append({
+                "addr": addr,
+                "function": ida_funcs.get_func_name(func.start_ea),
+                "comment": comment if comment else None,
+                "repeatable": repeatable,
+                "error": None,
+            })
+        except Exception as e:
+            results.append({"addr": addr, "comment": None, "error": str(e)})
+
+    return results
+
+
+# ============================================================================
+# Anterior / Posterior Comments (Extra Lines)
+# ============================================================================
+
+
+@tool
+@idawrite
+def set_extra_cmt(
+    addrs: Annotated[list[str] | str, "Addresses to set extra comment for"],
+    comment: Annotated[str, "Comment text (can be multiline with \\n)"],
+    position: Annotated[Literal["anterior", "posterior"], "Before (anterior) or after (posterior) the address"] = "anterior",
+) -> list[dict]:
+    """Set anterior or posterior extra comments.
+
+    Anterior comments appear before the address as separate lines.
+    Posterior comments appear after the address.
+    These are useful for extended documentation, ASCII art, or section headers.
+    """
+    addrs = normalize_list_input(addrs)
+    results = []
+
+    for addr in addrs:
+        try:
+            ea = parse_address(addr)
+
+            # Split into lines and add each
+            lines = comment.split("\n")
+
+            if position == "anterior":
+                base_line = ida_lines.E_PREV
+            else:
+                base_line = ida_lines.E_NEXT
+
+            # First, delete any existing extra comments
+            for i in range(1000):
+                if ida_lines.get_extra_cmt(ea, base_line + i) is None:
+                    break
+                ida_lines.del_extra_cmt(ea, base_line + i)
+
+            # Add new comment lines
+            for i, line in enumerate(lines):
+                ida_lines.add_extra_cmt(ea, base_line + i, line)
+
+            results.append({
+                "addr": addr,
+                "position": position,
+                "lines": len(lines),
+                "ok": True,
+                "error": None,
+            })
+        except Exception as e:
+            results.append({"addr": addr, "ok": False, "error": str(e)})
+
+    return results
+
+
+@tool
+@idaread
+def get_extra_cmt(
+    addrs: Annotated[list[str] | str, "Addresses to get extra comments from"],
+    position: Annotated[Literal["anterior", "posterior", "both"], "Which comments to get"] = "both",
+) -> list[dict]:
+    """Get anterior and/or posterior extra comments."""
+    addrs = normalize_list_input(addrs)
+    results = []
+
+    for addr in addrs:
+        try:
+            ea = parse_address(addr)
+
+            result = {"addr": addr, "error": None}
+
+            # Get anterior comments
+            if position in ("anterior", "both"):
+                anterior = []
+                for i in range(1000):
+                    cmt = ida_lines.get_extra_cmt(ea, ida_lines.E_PREV + i)
+                    if cmt is None:
+                        break
+                    anterior.append(cmt)
+                result["anterior"] = anterior if anterior else None
+
+            # Get posterior comments
+            if position in ("posterior", "both"):
+                posterior = []
+                for i in range(1000):
+                    cmt = ida_lines.get_extra_cmt(ea, ida_lines.E_NEXT + i)
+                    if cmt is None:
+                        break
+                    posterior.append(cmt)
+                result["posterior"] = posterior if posterior else None
+
+            results.append(result)
+        except Exception as e:
+            results.append({"addr": addr, "error": str(e)})
+
+    return results
+
+
+@tool
+@idawrite
+def del_extra_cmt(
+    addrs: Annotated[list[str] | str, "Addresses to delete extra comments from"],
+    position: Annotated[Literal["anterior", "posterior", "both"], "Which comments to delete"] = "both",
+) -> list[dict]:
+    """Delete anterior and/or posterior extra comments."""
+    addrs = normalize_list_input(addrs)
+    results = []
+
+    for addr in addrs:
+        try:
+            ea = parse_address(addr)
+            deleted = {"anterior": 0, "posterior": 0}
+
+            # Delete anterior comments
+            if position in ("anterior", "both"):
+                for i in range(1000):
+                    if ida_lines.get_extra_cmt(ea, ida_lines.E_PREV + i) is None:
+                        break
+                    ida_lines.del_extra_cmt(ea, ida_lines.E_PREV + i)
+                    deleted["anterior"] += 1
+
+            # Delete posterior comments
+            if position in ("posterior", "both"):
+                for i in range(1000):
+                    if ida_lines.get_extra_cmt(ea, ida_lines.E_NEXT + i) is None:
+                        break
+                    ida_lines.del_extra_cmt(ea, ida_lines.E_NEXT + i)
+                    deleted["posterior"] += 1
+
+            results.append({
+                "addr": addr,
+                "deleted": deleted,
+                "ok": True,
+                "error": None,
+            })
+        except Exception as e:
+            results.append({"addr": addr, "ok": False, "error": str(e)})
+
+    return results

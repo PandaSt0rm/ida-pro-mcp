@@ -8,6 +8,7 @@ import idautils
 import ida_nalt
 import ida_typeinf
 import ida_segment
+import ida_entry
 
 from .rpc import tool
 from .sync import idaread
@@ -441,3 +442,57 @@ def local_types():
         except Exception:
             continue
     return locals
+
+
+# ============================================================================
+# Exports
+# ============================================================================
+
+
+@tool
+@idaread
+def exports(
+    queries: Annotated[
+        list[ListQuery] | ListQuery | str,
+        "List exports with optional filtering and pagination. Format: {filter: 'pattern', offset: 0, count: 50}",
+    ] = "",
+) -> list[Page]:
+    """List exported functions/symbols.
+
+    Exports are functions or data that this binary makes available
+    to other modules that may load it.
+    """
+    queries = normalize_dict_list(
+        queries, lambda s: {"offset": 0, "count": 50, "filter": s}
+    )
+    results = []
+
+    # Build export list
+    all_exports = []
+    for i, entry in enumerate(idautils.Entries()):
+        # Entries() returns (index, ordinal, ea, name) in IDA 9
+        if len(entry) == 4:
+            idx, ordinal, ea, name = entry
+        else:
+            # Fallback for older format
+            ea, name, ordinal = entry[:3]
+        all_exports.append({
+            "addr": hex(ea),
+            "name": name if name else f"<Ordinal_{ordinal}>",
+            "ordinal": ordinal,
+            "index": i,
+        })
+
+    for query in queries:
+        offset = query.get("offset", 0)
+        count = query.get("count", 50)
+        filter_pattern = query.get("filter", "")
+
+        if filter_pattern:
+            filtered = pattern_filter(all_exports, filter_pattern, "name")
+        else:
+            filtered = all_exports
+
+        results.append(paginate(filtered, offset, count))
+
+    return results

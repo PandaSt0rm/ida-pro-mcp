@@ -14,6 +14,9 @@ import ida_entry
 import ida_search
 import ida_idaapi
 import ida_xref
+import ida_problems
+import ida_tryblks
+import ida_fixup
 from .rpc import tool
 from .sync import idaread, is_window_active
 from .utils import (
@@ -1457,3 +1460,353 @@ def analyze_strings(
         )
 
     return results
+
+
+# ============================================================================
+# Cross-References (from)
+# ============================================================================
+
+
+@tool
+@idaread
+def xrefs_from(
+    addrs: Annotated[list[str] | str, "Addresses to find cross-references from"],
+) -> list[dict]:
+    """Get all cross-references from specified addresses"""
+    addrs = normalize_list_input(addrs)
+    results = []
+
+    for addr in addrs:
+        try:
+            ea = parse_address(addr)
+            xrefs = get_xrefs_from_internal(ea)
+            results.append({
+                "addr": addr,
+                "xrefs": [
+                    {
+                        "to": x["addr"],
+                        "type": x["type"],
+                        "function": x.get("fn"),
+                    }
+                    for x in xrefs
+                ],
+                "count": len(xrefs),
+                "error": None,
+            })
+        except Exception as e:
+            results.append({"addr": addr, "xrefs": [], "count": 0, "error": str(e)})
+
+    return results
+
+
+# ============================================================================
+# Problems List
+# ============================================================================
+
+# Problem type constants with descriptions
+_PROBLEM_TYPES = {
+    ida_problems.PR_NOBASE: ("PR_NOBASE", "The segment for the address cannot be determined"),
+    ida_problems.PR_NONAME: ("PR_NONAME", "A name in the instruction has no resolution"),
+    ida_problems.PR_NOFOP: ("PR_NOFOP", "A function operand has no resolution"),
+    ida_problems.PR_NOCMT: ("PR_NOCMT", "A comment operand has no resolution"),
+    ida_problems.PR_NOXREFS: ("PR_NOXREFS", "Address has no references - possibly orphaned code"),
+    ida_problems.PR_JUMP: ("PR_JUMP", "Jump or call to an illegal address"),
+    ida_problems.PR_DISASM: ("PR_DISASM", "Can't disassemble"),
+    ida_problems.PR_HEAD: ("PR_HEAD", "Can't make data at address (probably code)"),
+    ida_problems.PR_ILLADDR: ("PR_ILLADDR", "Illegal address used in instruction operand"),
+    ida_problems.PR_MANYLINES: ("PR_MANYLINES", "Too many lines generated (>= 128K)"),
+    ida_problems.PR_BADSTACK: ("PR_BADSTACK", "Stack analysis problems"),
+    ida_problems.PR_ATTN: ("PR_ATTN", "Attention! Probably erroneous situation"),
+    ida_problems.PR_FINAL: ("PR_FINAL", "Not used for problem types - end marker"),
+    ida_problems.PR_ROLLED: ("PR_ROLLED", "Instruction has rolled back analysis"),
+    ida_problems.PR_COLLISION: ("PR_COLLISION", "Names collision (already exists)"),
+    ida_problems.PR_DECIMP: ("PR_DECIMP", "Decompiler/plugin notification"),
+}
+
+
+@tool
+@idaread
+def problems(
+    problem_type: Annotated[
+        str | None,
+        "Optional filter: PR_JUMP, PR_DISASM, PR_NOBASE, PR_BADSTACK, PR_ATTN, etc. (None=all)",
+    ] = None,
+) -> list[dict]:
+    """List all analysis problems found by IDA.
+
+    Problems indicate areas where IDA had difficulty during analysis,
+    such as invalid jumps, disassembly errors, or stack analysis issues.
+    """
+    results = []
+
+    # Determine which problem types to query
+    if problem_type:
+        # Look up the constant by name
+        type_map = {name: val for val, (name, _) in _PROBLEM_TYPES.items()}
+        if problem_type not in type_map:
+            valid = ", ".join(sorted(type_map.keys()))
+            return [{"error": f"Unknown problem type '{problem_type}'. Valid types: {valid}"}]
+        types_to_check = [type_map[problem_type]]
+    else:
+        # Check all types except PR_FINAL
+        types_to_check = [t for t in _PROBLEM_TYPES.keys() if t != ida_problems.PR_FINAL]
+
+    for pr_type in types_to_check:
+        type_name, type_desc = _PROBLEM_TYPES.get(pr_type, (f"UNKNOWN_{pr_type}", "Unknown"))
+
+        # Iterate through all problems of this type
+        ea = ida_problems.get_problem(pr_type, ida_ida.inf_get_min_ea())
+        while ea != idaapi.BADADDR:
+            # Get problem description if available
+            desc = ida_problems.get_problem_desc(pr_type, ea)
+
+            # Get function context if available
+            func = idaapi.get_func(ea)
+            func_name = ida_funcs.get_func_name(func.start_ea) if func else None
+
+            results.append({
+                "addr": hex(ea),
+                "type": type_name,
+                "type_desc": type_desc,
+                "description": desc if desc else None,
+                "function": func_name,
+            })
+
+            # Get next problem
+            ea = ida_problems.get_problem(pr_type, ea + 1)
+
+    return results
+
+
+# ============================================================================
+# Switch/Jump Tables
+# ============================================================================
+
+
+@tool
+@idaread
+def switch_info(
+    addrs: Annotated[list[str] | str, "Addresses of switch instructions to analyze"],
+) -> list[dict]:
+    """Get switch/jump table information at specified addresses.
+
+    Use this to understand switch statement structure including:
+    - Jump table location and entries
+    - Default case address
+    - Case values and their targets
+    """
+    addrs = normalize_list_input(addrs)
+    results = []
+
+    for addr in addrs:
+        try:
+            ea = parse_address(addr)
+
+            si = ida_nalt.switch_info_t()
+            if ida_nalt.get_switch_info(si, ea) is None:
+                results.append({
+                    "addr": addr,
+                    "is_switch": False,
+                    "error": None,
+                })
+                continue
+
+            # Extract jump table entries
+            jtable = []
+            elem_size = si.get_jtable_element_size()
+            for i in range(si.get_jtable_size()):
+                entry_ea = si.jumps + (i * elem_size)
+                target_offset = int.from_bytes(
+                    ida_bytes.get_bytes(entry_ea, elem_size),
+                    'little' if not ida_ida.inf_is_be() else 'big'
+                )
+                target = target_offset + si.elbase
+                jtable.append({
+                    "index": i,
+                    "entry_addr": hex(entry_ea),
+                    "target": hex(target),
+                })
+
+            results.append({
+                "addr": addr,
+                "is_switch": True,
+                "switch_addr": hex(si.startea),
+                "jump_table_addr": hex(si.jumps),
+                "jump_table_size": si.get_jtable_size(),
+                "element_size": elem_size,
+                "default_case": hex(si.defjump) if si.defjump != idaapi.BADADDR else None,
+                "lowcase": si.lowcase,
+                "cases": si.ncases,
+                "elbase": hex(si.elbase),
+                "entries": jtable,
+                "error": None,
+            })
+
+        except Exception as e:
+            results.append({"addr": addr, "is_switch": False, "error": str(e)})
+
+    return results
+
+
+# ============================================================================
+# Exception Handling / Try-Catch Blocks
+# ============================================================================
+
+
+@tool
+@idaread
+def tryblks(
+    addrs: Annotated[list[str] | str, "Function addresses to get try/catch blocks for"],
+) -> list[dict]:
+    """Get exception handling try/catch block information.
+
+    Returns SEH (Structured Exception Handling) and C++ exception handling
+    information for functions. Useful for understanding exception flow.
+    """
+    addrs = normalize_list_input(addrs)
+    results = []
+
+    for addr in addrs:
+        try:
+            ea = parse_address(addr)
+
+            # Get function containing this address
+            func = idaapi.get_func(ea)
+            if not func:
+                results.append({
+                    "addr": addr,
+                    "tryblks": [],
+                    "count": 0,
+                    "error": "Address not in a function",
+                })
+                continue
+
+            # Get try blocks for the function range
+            blocks = []
+
+            # Create a range_t for the function
+            func_range = idaapi.range_t(func.start_ea, func.end_ea)
+
+            # Create a tryblks_t vector to receive results
+            tbv = ida_tryblks.tryblks_t()
+
+            # Get try blocks - returns number of blocks found
+            count = ida_tryblks.get_tryblks(tbv, func_range)
+
+            # Iterate through try blocks
+            for i in range(count):
+                tb = tbv[i]
+
+                block_info = {
+                    "level": tb.level if hasattr(tb, "level") else 0,
+                    "try_start": hex(tb.start_ea),
+                    "try_end": hex(tb.end_ea),
+                    "handlers": [],
+                }
+
+                # Get catch handlers for this try block
+                # tryblk_t can contain catch_t entries
+                if hasattr(tb, "size"):
+                    for j in range(tb.size()):
+                        handler = tb.at(j) if hasattr(tb, "at") else None
+                        if handler:
+                            handler_info = {}
+
+                            # Check handler type
+                            if hasattr(handler, "disp") and handler.disp != 0:
+                                handler_info["type"] = "seh"
+                                handler_info["filter_addr"] = hex(handler.disp)
+                            else:
+                                handler_info["type"] = "cpp"
+
+                            if hasattr(handler, "ea"):
+                                handler_info["handler_addr"] = hex(handler.ea)
+
+                            block_info["handlers"].append(handler_info)
+
+                blocks.append(block_info)
+
+            results.append({
+                "addr": addr,
+                "function": ida_funcs.get_func_name(func.start_ea),
+                "tryblks": blocks,
+                "count": len(blocks),
+                "error": None,
+            })
+
+        except Exception as e:
+            results.append({"addr": addr, "tryblks": [], "count": 0, "error": str(e)})
+
+    return results
+
+
+# ============================================================================
+# Fixups / Relocations
+# ============================================================================
+
+# Fixup type constants - built dynamically to handle IDA version differences
+def _build_fixup_types():
+    types = {}
+    for name in ['FIXUP_OFF8', 'FIXUP_OFF16', 'FIXUP_SEG16', 'FIXUP_PTR16',
+                 'FIXUP_PTR32', 'FIXUP_OFF32', 'FIXUP_HI8', 'FIXUP_HI16',
+                 'FIXUP_LOW8', 'FIXUP_LOW16', 'FIXUP_OFF64', 'FIXUP_CUSTOM']:
+        if hasattr(ida_fixup, name):
+            types[getattr(ida_fixup, name)] = name.replace('FIXUP_', '')
+    return types
+
+_FIXUP_TYPES = _build_fixup_types()
+
+
+@tool
+@idaread
+def fixups(
+    start: Annotated[str | None, "Start address (default: image base)"] = None,
+    end: Annotated[str | None, "End address (default: image end)"] = None,
+    limit: Annotated[int, "Maximum number of fixups to return (default: 1000)"] = 1000,
+) -> list[dict]:
+    """List fixups/relocations in the specified address range.
+
+    Fixups indicate places in the binary that need relocation when loaded
+    at a different base address. Useful for understanding position-independent code.
+    """
+    # Parse address range
+    if start:
+        start_ea = parse_address(start)
+    else:
+        start_ea = ida_ida.inf_get_min_ea()
+
+    if end:
+        end_ea = parse_address(end)
+    else:
+        end_ea = ida_ida.inf_get_max_ea()
+
+    results = []
+    count = 0
+    ea = ida_fixup.get_first_fixup_ea()
+
+    while ea != idaapi.BADADDR and count < limit:
+        if ea >= start_ea and ea < end_ea:
+            fd = ida_fixup.fixup_data_t()
+            if ida_fixup.get_fixup(fd, ea):
+                fixup_type = _FIXUP_TYPES.get(fd.get_type(), f"TYPE_{fd.get_type()}")
+
+                result_entry = {
+                    "addr": hex(ea),
+                    "type": fixup_type,
+                    "type_id": fd.get_type(),
+                    "target": hex(fd.off) if fd.off != idaapi.BADADDR else None,
+                    "base": hex(fd.get_base()) if fd.get_base() != idaapi.BADADDR else None,
+                }
+                # Add displacement if available
+                if hasattr(fd, 'displacement'):
+                    result_entry["displacement"] = fd.displacement
+                results.append(result_entry)
+                count += 1
+
+        ea = ida_fixup.get_next_fixup_ea(ea)
+
+    return {
+        "fixups": results,
+        "count": len(results),
+        "has_more": ea != idaapi.BADADDR,
+    }

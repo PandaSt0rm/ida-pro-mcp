@@ -6,6 +6,7 @@ granularities (bytes, u8, u16, u32, u64, strings) and patching binary data.
 
 from typing import Annotated
 import ida_bytes
+import ida_ida
 import idaapi
 
 from .rpc import tool
@@ -263,3 +264,168 @@ def patch(
             results.append({"addr": patch.get("addr"), "size": 0, "error": str(e)})
 
     return results
+
+
+# ============================================================================
+# Original Bytes (Pre-Patch Values)
+# ============================================================================
+
+
+@tool
+@idaread
+def get_original_bytes(
+    regions: Annotated[
+        list[MemoryRead] | MemoryRead | str,
+        "Memory regions to read original bytes from. Accepts list of {addr, size} dicts or string shortcut: 'addr:size;addr2:size2'",
+    ],
+) -> list[dict]:
+    """Read original bytes from memory addresses (before any patches were applied).
+
+    Use this to compare patched bytes with original values or to revert patches.
+    """
+    regions = normalize_dict_list(regions, parse_addr_size)
+
+    results = []
+    for item in regions:
+        addr = item.get("addr", "")
+        size = item.get("size", 0)
+
+        try:
+            ea = parse_address(addr)
+            # Get original bytes one by one
+            original = []
+            for i in range(size):
+                original.append(ida_bytes.get_original_byte(ea + i))
+            data = " ".join(f"{x:#02x}" for x in original)
+            results.append({"addr": addr, "data": data, "error": None})
+        except Exception as e:
+            results.append({"addr": addr, "data": None, "error": str(e)})
+
+    return results
+
+
+@tool
+@idaread
+def get_original_byte(
+    addrs: Annotated[list[str] | str, "Addresses to read original bytes from"],
+) -> list[dict]:
+    """Read original byte values from memory addresses (before patches)."""
+    addrs = normalize_list_input(addrs)
+    results = []
+
+    for addr in addrs:
+        try:
+            ea = parse_address(addr)
+            value = ida_bytes.get_original_byte(ea)
+            results.append({"addr": addr, "value": value, "error": None})
+        except Exception as e:
+            results.append({"addr": addr, "value": None, "error": str(e)})
+
+    return results
+
+
+@tool
+@idaread
+def get_original_word(
+    addrs: Annotated[list[str] | str, "Addresses to read original 16-bit values from"],
+) -> list[dict]:
+    """Read original 16-bit word values from memory addresses (before patches)."""
+    addrs = normalize_list_input(addrs)
+    results = []
+
+    for addr in addrs:
+        try:
+            ea = parse_address(addr)
+            value = ida_bytes.get_original_word(ea)
+            results.append({"addr": addr, "value": value, "error": None})
+        except Exception as e:
+            results.append({"addr": addr, "value": None, "error": str(e)})
+
+    return results
+
+
+@tool
+@idaread
+def get_original_dword(
+    addrs: Annotated[list[str] | str, "Addresses to read original 32-bit values from"],
+) -> list[dict]:
+    """Read original 32-bit dword values from memory addresses (before patches)."""
+    addrs = normalize_list_input(addrs)
+    results = []
+
+    for addr in addrs:
+        try:
+            ea = parse_address(addr)
+            value = ida_bytes.get_original_dword(ea)
+            results.append({"addr": addr, "value": value, "error": None})
+        except Exception as e:
+            results.append({"addr": addr, "value": None, "error": str(e)})
+
+    return results
+
+
+@tool
+@idaread
+def get_original_qword(
+    addrs: Annotated[list[str] | str, "Addresses to read original 64-bit values from"],
+) -> list[dict]:
+    """Read original 64-bit qword values from memory addresses (before patches)."""
+    addrs = normalize_list_input(addrs)
+    results = []
+
+    for addr in addrs:
+        try:
+            ea = parse_address(addr)
+            value = ida_bytes.get_original_qword(ea)
+            results.append({"addr": addr, "value": value, "error": None})
+        except Exception as e:
+            results.append({"addr": addr, "value": None, "error": str(e)})
+
+    return results
+
+
+@tool
+@idaread
+def list_patched_bytes(
+    start: Annotated[str | None, "Start address (default: image base)"] = None,
+    end: Annotated[str | None, "End address (default: image end)"] = None,
+    limit: Annotated[int, "Maximum number of patches to return (default: 1000)"] = 1000,
+) -> dict:
+    """List all patched bytes in the specified address range.
+
+    Returns addresses where bytes have been modified from their original values.
+    """
+    # Parse address range
+    if start:
+        start_ea = parse_address(start)
+    else:
+        start_ea = ida_ida.inf_get_min_ea()
+
+    if end:
+        end_ea = parse_address(end)
+    else:
+        end_ea = ida_ida.inf_get_max_ea()
+
+    patches = []
+    count = 0
+    ea = start_ea
+
+    while ea < end_ea and count < limit:
+        original = ida_bytes.get_original_byte(ea)
+        current = ida_bytes.get_byte(ea)
+
+        if original != current:
+            patches.append({
+                "addr": hex(ea),
+                "original": hex(original),
+                "current": hex(current),
+            })
+            count += 1
+
+        ea += 1
+
+    return {
+        "patches": patches,
+        "count": len(patches),
+        "range": {"start": hex(start_ea), "end": hex(end_ea)},
+    }
