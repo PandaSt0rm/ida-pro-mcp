@@ -424,17 +424,18 @@ def infer_types(
             ea = parse_address(addr)
             tif = ida_typeinf.tinfo_t()
 
-            # Try Hex-Rays inference
-            if ida_hexrays.init_hexrays_plugin() and ida_hexrays.guess_tinfo(tif, ea):
-                results.append(
-                    {
-                        "addr": addr,
-                        "inferred_type": str(tif),
-                        "method": "hexrays",
-                        "confidence": "high",
-                    }
-                )
-                continue
+            # Try Hex-Rays inference (guess_tinfo removed in IDA 9)
+            if hasattr(ida_hexrays, "guess_tinfo") and ida_hexrays.init_hexrays_plugin():
+                if ida_hexrays.guess_tinfo(tif, ea):
+                    results.append(
+                        {
+                            "addr": addr,
+                            "inferred_type": str(tif),
+                            "method": "hexrays",
+                            "confidence": "high",
+                        }
+                    )
+                    continue
 
             # Try getting existing type info
             if ida_nalt.get_tinfo(tif, ea):
