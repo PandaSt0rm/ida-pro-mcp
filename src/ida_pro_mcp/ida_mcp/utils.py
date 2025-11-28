@@ -997,24 +997,103 @@ def get_stack_frame_variables_internal(
     return members
 
 
+# Human-readable descriptions for Hex-Rays decompilation error codes
+_MERR_DESCRIPTIONS: dict[int, str] = {
+    ida_hexrays.MERR_OK: "OK",
+    ida_hexrays.MERR_BLOCK: "No instruction at the specified address, or the address is in the middle of an instruction",
+    ida_hexrays.MERR_INTERR: "Internal decompiler error occurred",
+    ida_hexrays.MERR_INSN: "Failed to decode instruction (unknown or unsupported opcode)",
+    ida_hexrays.MERR_MEM: "Out of memory",
+    ida_hexrays.MERR_BADBLK: "Invalid basic block detected in control flow graph",
+    ida_hexrays.MERR_BADSP: "Stack pointer analysis failed (positive SP value or unable to trace SP changes)",
+    ida_hexrays.MERR_PROLOG: "Function prolog analysis failed",
+    ida_hexrays.MERR_SWITCH: "Switch statement analysis failed (could not determine switch idiom)",
+    ida_hexrays.MERR_EXCEPTION: "Exception handling analysis failed",
+    ida_hexrays.MERR_HUGESTACK: "Stack frame is too large to decompile",
+    ida_hexrays.MERR_LVARS: "Local variable allocation failed",
+    ida_hexrays.MERR_BITNESS: "Bitness mismatch (16-bit code is not supported)",
+    ida_hexrays.MERR_BADCALL: "Invalid or unresolved indirect call",
+    ida_hexrays.MERR_BADFRAME: "Invalid stack frame (corrupted or inconsistent frame structure)",
+    ida_hexrays.MERR_UNKTYPE: "Unknown or undefined type encountered",
+    ida_hexrays.MERR_BADIDB: "IDB inconsistency detected (database corruption or invalid references)",
+    ida_hexrays.MERR_SIZEOF: "Invalid sizeof() expression",
+    ida_hexrays.MERR_REDO: "Redecompilation required (internal state changed)",
+    ida_hexrays.MERR_CANCELED: "Decompilation was canceled by user",
+    ida_hexrays.MERR_RECDEPTH: "Recursion depth limit exceeded",
+    ida_hexrays.MERR_OVERLAP: "Overlapping function chunks or conflicting ranges",
+    ida_hexrays.MERR_PARTINIT: "Partially initialized variable detected",
+    ida_hexrays.MERR_COMPLEX: "Function is too complex to decompile (too many nodes, edges, or variables)",
+    ida_hexrays.MERR_LICENSE: "Decompiler license is not available",
+    ida_hexrays.MERR_ONLY32: "Only 32-bit code is supported for this processor",
+    ida_hexrays.MERR_ONLY64: "Only 64-bit code is supported for this processor",
+    ida_hexrays.MERR_BUSY: "Decompiler is busy with another operation",
+    ida_hexrays.MERR_FARPTR: "Far pointer detected (not supported)",
+    ida_hexrays.MERR_EXTERN: "Address belongs to an external/imported function (no code to decompile)",
+    ida_hexrays.MERR_FUNCSIZE: "Function is too large to decompile (exceeds size limits)",
+    ida_hexrays.MERR_BADRANGES: "Invalid or non-contiguous function address ranges",
+    ida_hexrays.MERR_BADARCH: "Unsupported processor architecture",
+    ida_hexrays.MERR_DSLOT: "Delay slot analysis failed (MIPS/SPARC specific)",
+    ida_hexrays.MERR_STOP: "Decompilation was stopped",
+    ida_hexrays.MERR_CLOUD: "Cloud decompiler error",
+    ida_hexrays.MERR_EMULATOR: "Emulator error during decompilation",
+    ida_hexrays.MERR_LOOP: "Infinite loop detected in control flow",
+}
+
+
+def _get_merr_description(code: int) -> str:
+    """Get human-readable description for a Hex-Rays error code"""
+    if code in _MERR_DESCRIPTIONS:
+        return _MERR_DESCRIPTIONS[code]
+    # Find the constant name for unknown codes
+    for name in dir(ida_hexrays):
+        if name.startswith("MERR_") and getattr(ida_hexrays, name) == code:
+            return f"Unknown error ({name})"
+    return f"Unknown error (code {code})"
+
+
 def decompile_checked(addr: int):
     """Decompile a function and raise IDAError on failure"""
     if not ida_hexrays.init_hexrays_plugin():
         raise IDAError("Hex-Rays decompiler is not available")
+
+    # Check if address is inside a function
+    func = idaapi.get_func(addr)
+    if not func:
+        raise IDAError(
+            f"Address {hex(addr)} is not inside a function. "
+            "Create a function first with IDA's 'Make Function' command (P key), "
+            "or verify the address is correct."
+        )
+
     error = ida_hexrays.hexrays_failure_t()
     cfunc = ida_hexrays.decompile_func(addr, error, ida_hexrays.DECOMP_WARNINGS)
     if not cfunc:
         if error.code == ida_hexrays.MERR_LICENSE:
             raise IDAError(
-                "Decompiler license is not available. Use `disassemble_function` to get the assembly code instead."
+                "Decompiler license is not available. "
+                "Use the `disasm` tool to get assembly code instead."
             )
 
-        message = f"Decompilation failed at {hex(addr)}"
+        # Build detailed error message
+        error_desc = _get_merr_description(error.code)
+        parts = [f"Decompilation failed at {hex(addr)}: {error_desc}"]
+
+        # Add IDA's error string if available
         if error.str:
-            message += f": {error.str}"
-        if error.errea != idaapi.BADADDR:
-            message += f" (address: {hex(error.errea)})"
-        raise IDAError(message)
+            parts.append(f"Details: {error.str}")
+
+        # Add error address if different from the requested address
+        if error.errea != idaapi.BADADDR and error.errea != addr:
+            parts.append(f"Problem location: {hex(error.errea)}")
+
+        # Add function info for context
+        func_name = ida_funcs.get_func_name(func.start_ea)
+        if func_name:
+            parts.append(
+                f"Function: {func_name} ({hex(func.start_ea)}-{hex(func.end_ea)})"
+            )
+
+        raise IDAError(" | ".join(parts))
     return cfunc
 
 
