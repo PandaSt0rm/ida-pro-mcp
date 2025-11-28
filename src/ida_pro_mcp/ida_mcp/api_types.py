@@ -165,7 +165,12 @@ def struct_info(
 
 @tool
 @idaread
-def read_struct(queries: list[StructRead] | StructRead) -> list[dict]:
+def read_struct(
+    queries: Annotated[
+        list[StructRead] | StructRead | str,
+        "Struct read queries. Accepts list of {addr, struct} dicts or string shortcut: 'addr:struct_name;addr2:struct_name2'",
+    ],
+) -> list[dict]:
     """Read struct fields"""
 
     def parse_addr_struct(s: str) -> dict:
@@ -325,7 +330,12 @@ def search_structs(
 
 @tool
 @idawrite
-def apply_types(applications: list[TypeApplication] | TypeApplication) -> list[dict]:
+def apply_types(
+    applications: Annotated[
+        list[TypeApplication] | TypeApplication | str,
+        "Type applications. Accepts list of TypeApplication dicts or string shortcut: 'addr:typename;addr2:typename2'",
+    ],
+) -> list[dict]:
     """Apply types (function/global/local/stack)"""
 
     def parse_addr_type(s: str) -> dict:

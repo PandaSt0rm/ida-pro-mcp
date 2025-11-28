@@ -19,6 +19,11 @@ from .sync import idaread, is_window_active
 from .utils import (
     parse_address,
     normalize_list_input,
+    normalize_dict_list,
+    parse_struct_field_query,
+    parse_path_query,
+    parse_insn_pattern,
+    parse_string_filter,
     get_function,
     get_prototype,
     get_stack_frame_variables_internal,
@@ -310,10 +315,14 @@ def xrefs_to(
 
 @tool
 @idaread
-def xrefs_to_field(queries: list[StructFieldQuery] | StructFieldQuery) -> list[dict]:
+def xrefs_to_field(
+    queries: Annotated[
+        list[StructFieldQuery] | StructFieldQuery | str,
+        "Field xref queries. Accepts list of {struct, field} dicts or string shortcut: 'struct.field;struct2.field2'",
+    ],
+) -> list[dict]:
     """Get cross-references to structure fields"""
-    if isinstance(queries, dict):
-        queries = [queries]
+    queries = normalize_dict_list(queries, parse_struct_field_query)
 
     results = []
     til = ida_typeinf.get_idati()
@@ -836,10 +845,14 @@ def basic_blocks(
 
 @tool
 @idaread
-def find_paths(queries: list[PathQuery] | PathQuery) -> list[dict]:
+def find_paths(
+    queries: Annotated[
+        list[PathQuery] | PathQuery | str,
+        "Path queries. Accepts list of {source, target} dicts or string shortcut: 'source->target;source2->target2'",
+    ],
+) -> list[dict]:
     """Find execution paths between source and target addresses"""
-    if isinstance(queries, dict):
-        queries = [queries]
+    queries = normalize_dict_list(queries, parse_path_query)
     results = []
 
     for query in queries:
@@ -1091,13 +1104,15 @@ def search(
 @tool
 @idaread
 def find_insn_operands(
-    patterns: list[InsnPattern] | InsnPattern,
+    patterns: Annotated[
+        list[InsnPattern] | InsnPattern | str,
+        "Instruction patterns. Accepts list of {mnem, op0, op1, op2, op_any} dicts or string shortcut: 'call op_any=0x401000' or 'mov op0=0x10;ret'",
+    ],
     limit: Annotated[int, "Max matches per pattern (default: 1000, max: 10000)"] = 1000,
     offset: Annotated[int, "Skip first N matches (default: 0)"] = 0,
 ) -> list[dict]:
     """Find instructions with specific mnemonics and operand values"""
-    if isinstance(patterns, dict):
-        patterns = [patterns]
+    patterns = normalize_dict_list(patterns, parse_insn_pattern)
 
     # Enforce max limit
     if limit <= 0 or limit > 10000:
@@ -1388,13 +1403,15 @@ def xref_matrix(
 @tool
 @idaread
 def analyze_strings(
-    filters: list[StringFilter] | StringFilter,
+    filters: Annotated[
+        list[StringFilter] | StringFilter | str,
+        "String filters. Accepts list of {pattern, min_length} dicts or string shortcut: 'error' or 'http,min_length=5'",
+    ],
     limit: Annotated[int, "Max matches per filter (default: 1000, max: 10000)"] = 1000,
     offset: Annotated[int, "Skip first N matches (default: 0)"] = 0,
 ) -> list[dict]:
     """Analyze and filter strings in the binary"""
-    if isinstance(filters, dict):
-        filters = [filters]
+    filters = normalize_dict_list(filters, parse_string_filter)
 
     # Enforce max limit
     if limit <= 0 or limit > 10000:

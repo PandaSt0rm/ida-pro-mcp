@@ -1,3 +1,5 @@
+from typing import Annotated
+
 import idaapi
 import idautils
 import idc
@@ -12,6 +14,9 @@ from .utils import (
     parse_address,
     decompile_checked,
     refresh_decompiler_ctext,
+    normalize_dict_list,
+    parse_comment_op,
+    parse_asm_patch_op,
     CommentOp,
     AsmPatchOp,
     FunctionRename,
@@ -29,10 +34,14 @@ from .utils import (
 
 @tool
 @idawrite
-def set_comments(items: list[CommentOp] | CommentOp):
+def set_comments(
+    items: Annotated[
+        list[CommentOp] | CommentOp | str,
+        "Comment operations. Accepts list of {addr, comment} dicts or string shortcut: 'addr=comment;addr2=comment2'",
+    ],
+):
     """Set comments at addresses (both disassembly and decompiler views)"""
-    if isinstance(items, dict):
-        items = [items]
+    items = normalize_dict_list(items, parse_comment_op)
 
     results = []
     for item in items:
@@ -111,10 +120,14 @@ def set_comments(items: list[CommentOp] | CommentOp):
 
 @tool
 @idawrite
-def patch_asm(items: list[AsmPatchOp] | AsmPatchOp) -> list[dict]:
+def patch_asm(
+    items: Annotated[
+        list[AsmPatchOp] | AsmPatchOp | str,
+        "Assembly patch operations. Accepts list of {addr, asm} dicts or string shortcut: 'addr=asm;addr2=asm2'",
+    ],
+) -> list[dict]:
     """Patch assembly instructions at addresses"""
-    if isinstance(items, dict):
-        items = [items]
+    items = normalize_dict_list(items, parse_asm_patch_op)
 
     results = []
     for item in items:
@@ -151,16 +164,54 @@ def patch_asm(items: list[AsmPatchOp] | AsmPatchOp) -> list[dict]:
     return results
 
 
+def _parse_func_rename(s: str) -> FunctionRename:
+    """Parse 'addr=name' format for function renames"""
+    if "=" in s:
+        addr, name = s.split("=", 1)
+        return {"addr": addr.strip(), "name": name.strip()}
+    raise ValueError(f"Invalid function rename format: {s} (expected 'addr=name')")
+
+
+def _parse_global_rename(s: str) -> GlobalRename:
+    """Parse 'old=new' format for global renames"""
+    if "=" in s:
+        old, new = s.split("=", 1)
+        return {"old": old.strip(), "new": new.strip()}
+    raise ValueError(f"Invalid global rename format: {s} (expected 'old=new')")
+
+
+def _parse_local_rename(s: str) -> LocalRename:
+    """Parse 'func_addr:old=new' format for local variable renames"""
+    if ":" in s and "=" in s:
+        func_addr, rest = s.split(":", 1)
+        old, new = rest.split("=", 1)
+        return {
+            "func_addr": func_addr.strip(),
+            "old": old.strip(),
+            "new": new.strip(),
+        }
+    raise ValueError(f"Invalid local rename format: {s} (expected 'func_addr:old=new')")
+
+
+def _parse_stack_rename(s: str) -> StackRename:
+    """Parse 'func_addr:old=new' format for stack variable renames"""
+    if ":" in s and "=" in s:
+        func_addr, rest = s.split(":", 1)
+        old, new = rest.split("=", 1)
+        return {
+            "func_addr": func_addr.strip(),
+            "old": old.strip(),
+            "new": new.strip(),
+        }
+    raise ValueError(
+        f"Invalid stack rename format: {s} (expected 'func_addr:old=new')"
+    )
+
+
 @tool
 @idawrite
 def rename(batch: RenameBatch) -> dict:
     """Unified rename operation for functions, globals, locals, and stack variables"""
-
-    def _normalize_items(items):
-        """Convert single item or None to list"""
-        if items is None:
-            return []
-        return [items] if isinstance(items, dict) else items
 
     def _rename_funcs(items: list[FunctionRename]) -> list[dict]:
         results = []
@@ -335,12 +386,20 @@ def rename(batch: RenameBatch) -> dict:
     # Process each category (keys match RenameBatch TypedDict)
     result = {}
     if "func" in batch:
-        result["func"] = _rename_funcs(_normalize_items(batch["func"]))
+        result["func"] = _rename_funcs(
+            normalize_dict_list(batch["func"], _parse_func_rename)
+        )
     if "data" in batch:
-        result["data"] = _rename_globals(_normalize_items(batch["data"]))
+        result["data"] = _rename_globals(
+            normalize_dict_list(batch["data"], _parse_global_rename)
+        )
     if "local" in batch:
-        result["local"] = _rename_locals(_normalize_items(batch["local"]))
+        result["local"] = _rename_locals(
+            normalize_dict_list(batch["local"], _parse_local_rename)
+        )
     if "stack" in batch:
-        result["stack"] = _rename_stack(_normalize_items(batch["stack"]))
+        result["stack"] = _rename_stack(
+            normalize_dict_list(batch["stack"], _parse_stack_rename)
+        )
 
     return result

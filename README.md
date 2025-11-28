@@ -311,6 +311,44 @@ _Note_: The `idalib` feature was contributed by [Willi Ballenthin](https://githu
 - **Consistent error handling**: All batch operations return `[{..., error: null|string}, ...]`
 - **Cursor-based pagination**: Search functions return `cursor: {next: offset}` or `{done: true}` (default limit: 1000, enforced max: 10000 to prevent token overflow)
 - **Performance**: Strings are cached with MD5-based invalidation to avoid repeated `build_strlist` calls in large projects
+- **String shortcuts**: All batch operations accept string shorthand in addition to structured data (see below)
+
+## String Shortcut Formats
+
+All batch operations support **both** structured data (list of dicts) and **string shortcuts** for convenience. String shortcuts use `;` or `,` as entry separators.
+
+**Structured format (always works):**
+```json
+{"items": [{"addr": "0x401000", "comment": "entry point"}]}
+```
+
+**String shortcut (same result):**
+```json
+{"items": "0x401000=entry point;0x402000=second func"}
+```
+
+| Function | String Format | Example |
+|----------|---------------|---------|
+| `rename` (func) | `addr=name` | `"0x401000=main;0x402000=init"` |
+| `rename` (data) | `old=new` | `"g_var1=counter;g_var2=flag"` |
+| `rename` (local/stack) | `func_addr:old=new` | `"0x401000:v1=counter"` |
+| `set_comments` | `addr=comment` | `"0x401000=entry point"` |
+| `patch_asm` | `addr=asm` | `"0x401000=nop;ret"` |
+| `get_bytes` | `addr:size` | `"0x401000:16;0x402000:32"` |
+| `patch` | `addr=hexdata` | `"0x401000=90 90 90"` |
+| `dbg_enable_bp` | `addr=bool` | `"0x401000=true;0x402000=false"` |
+| `dbg_read_mem` | `addr:size` | `"0x401000:256"` |
+| `dbg_write_mem` | `addr=hexdata` | `"0x401000=CC CC CC"` |
+| `read_struct` | `addr:struct_name` | `"0x401000:MyStruct"` |
+| `apply_types` | `addr:typename` | `"0x401000:int *"` |
+| `xrefs_to_field` | `struct.field` | `"MyStruct.field1"` |
+| `find_paths` | `source->target` | `"0x401000->0x402000"` |
+| `declare_stack` | `addr:offset:name:type` | `"0x401000:-0x10:buf:char[16]"` |
+| `delete_stack` | `addr:name` | `"0x401000:buf"` |
+| `find_insn_operands` | `mnem op_any=addr` | `"call op_any=0x401000;ret"` |
+| `analyze_strings` | `pattern,min_length=N` | `"error;http,min_length=5"` |
+
+This allows LLMs to use more compact representations when calling tools, reducing token usage while maintaining full functionality
 
 ## Comparison with other MCP servers
 

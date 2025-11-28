@@ -10,7 +10,15 @@ import idaapi
 
 from .rpc import tool
 from .sync import idaread, idawrite
-from .utils import normalize_list_input, parse_address, MemoryRead, MemoryPatch
+from .utils import (
+    normalize_list_input,
+    normalize_dict_list,
+    parse_address,
+    parse_addr_size,
+    parse_addr_data,
+    MemoryRead,
+    MemoryPatch,
+)
 
 
 # ============================================================================
@@ -20,10 +28,14 @@ from .utils import normalize_list_input, parse_address, MemoryRead, MemoryPatch
 
 @tool
 @idaread
-def get_bytes(regions: list[MemoryRead] | MemoryRead) -> list[dict]:
+def get_bytes(
+    regions: Annotated[
+        list[MemoryRead] | MemoryRead | str,
+        "Memory regions to read. Accepts list of {addr, size} dicts or string shortcut: 'addr:size;addr2:size2'",
+    ],
+) -> list[dict]:
     """Read bytes from memory addresses"""
-    if isinstance(regions, dict):
-        regions = [regions]
+    regions = normalize_dict_list(regions, parse_addr_size)
 
     results = []
     for item in regions:
@@ -226,10 +238,14 @@ def get_global_value(
 
 @tool
 @idawrite
-def patch(patches: list[MemoryPatch] | MemoryPatch) -> list[dict]:
+def patch(
+    patches: Annotated[
+        list[MemoryPatch] | MemoryPatch | str,
+        "Memory patches. Accepts list of {addr, data} dicts or string shortcut: 'addr=hexdata;addr2=hexdata2'",
+    ],
+) -> list[dict]:
     """Patch bytes at memory addresses with hex data"""
-    if isinstance(patches, dict):
-        patches = [patches]
+    patches = normalize_dict_list(patches, parse_addr_data)
 
     results = []
 

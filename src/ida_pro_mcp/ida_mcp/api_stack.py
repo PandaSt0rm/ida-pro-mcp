@@ -16,6 +16,8 @@ from .utils import (
     normalize_dict_list,
     parse_address,
     get_type_by_name,
+    parse_stack_var_decl,
+    parse_stack_var_delete,
     StackVarDecl,
     StackVarDelete,
     get_stack_frame_variables_internal,
@@ -48,10 +50,13 @@ def stack_frame(addrs: Annotated[list[str] | str, "Address(es)"]) -> list[dict]:
 @tool
 @idawrite
 def declare_stack(
-    items: list[StackVarDecl] | StackVarDecl,
+    items: Annotated[
+        list[StackVarDecl] | StackVarDecl | str,
+        "Stack variable declarations. Accepts list of {addr, offset, name, ty} dicts or string shortcut: 'addr:offset:name:type'",
+    ],
 ):
     """Create stack vars"""
-    items = normalize_dict_list(items)
+    items = normalize_dict_list(items, parse_stack_var_decl)
     results = []
     for item in items:
         fn_addr = item.get("addr", "")
@@ -93,11 +98,14 @@ def declare_stack(
 @tool
 @idawrite
 def delete_stack(
-    items: list[StackVarDelete] | StackVarDelete,
+    items: Annotated[
+        list[StackVarDelete] | StackVarDelete | str,
+        "Stack variable deletions. Accepts list of {addr, name} dicts or string shortcut: 'addr:name;addr2:name2'",
+    ],
 ):
     """Delete stack vars"""
 
-    items = normalize_dict_list(items)
+    items = normalize_dict_list(items, parse_stack_var_delete)
     results = []
     for item in items:
         fn_addr = item.get("addr", "")

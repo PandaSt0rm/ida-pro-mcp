@@ -96,17 +96,20 @@ class RenameBatch(TypedDict, total=False):
     """Batch rename operations across all entity types"""
 
     func: Annotated[
-        list[FunctionRename] | FunctionRename | None, "Function rename operations"
+        list[FunctionRename] | FunctionRename | str | None,
+        "Function rename operations. Accepts list of {addr, name} dicts or string: 'addr=name;addr2=name2'",
     ]
     data: Annotated[
-        list[GlobalRename] | GlobalRename | None,
-        "Global/data variable rename operations",
+        list[GlobalRename] | GlobalRename | str | None,
+        "Global/data variable rename operations. Accepts list of {old, new} dicts or string: 'old=new;old2=new2'",
     ]
     local: Annotated[
-        list[LocalRename] | LocalRename | None, "Local variable rename operations"
+        list[LocalRename] | LocalRename | str | None,
+        "Local variable rename operations. Accepts list of {func_addr, old, new} dicts or string: 'func_addr:old=new'",
     ]
     stack: Annotated[
-        list[StackRename] | StackRename | None, "Stack variable rename operations"
+        list[StackRename] | StackRename | str | None,
+        "Stack variable rename operations. Accepts list of {func_addr, old, new} dicts or string: 'func_addr:old=new'",
     ]
 
 
@@ -418,7 +421,7 @@ def normalize_dict_list(
 
     Flow:
         dict → [dict]
-        str → split by ',' → list[str] → map(string_parser) → list[dict]
+        str → split by ';' or ',' → list[str] → map(string_parser) → list[dict]
         list[str] → map(string_parser) → list[dict]
         list[dict] → list[dict]
         Any → [{}]
@@ -450,8 +453,15 @@ def normalize_dict_list(
         except (json.JSONDecodeError, ValueError):
             pass
 
-        # Not JSON - split by comma and parse
-        parts = [s.strip() for s in value.split(",") if s.strip()]
+        # Not JSON - split by semicolon or comma
+        parts = []
+        for sep in [";", ","]:
+            if sep in value:
+                parts = [s.strip() for s in value.split(sep) if s.strip()]
+                break
+        if not parts:
+            parts = [value.strip()] if value.strip() else []
+
         if not parts:
             return [{}]
 
@@ -461,6 +471,187 @@ def normalize_dict_list(
     else:
         # Any other type → empty dict
         return [{}]
+
+
+# ============================================================================
+# String Parsers for normalize_dict_list
+# ============================================================================
+
+
+def parse_addr_value(s: str, value_key: str = "value") -> dict:
+    """Parse 'addr=value' or 'addr:size' format"""
+    for sep in ["=", ":"]:
+        if sep in s:
+            addr, value = s.split(sep, 1)
+            return {"addr": addr.strip(), value_key: value.strip()}
+    raise ValueError(f"Invalid format: {s} (expected 'addr{'{=,:}'}value')")
+
+
+def parse_addr_size(s: str) -> MemoryRead:
+    """Parse 'addr:size' format for memory reads"""
+    if ":" in s:
+        addr, size = s.split(":", 1)
+        return {"addr": addr.strip(), "size": int(size.strip(), 0)}
+    raise ValueError(f"Invalid format: {s} (expected 'addr:size')")
+
+
+def parse_addr_data(s: str) -> MemoryPatch:
+    """Parse 'addr=data' format for memory patches"""
+    if "=" in s:
+        addr, data = s.split("=", 1)
+        return {"addr": addr.strip(), "data": data.strip()}
+    raise ValueError(f"Invalid format: {s} (expected 'addr=data')")
+
+
+def parse_comment_op(s: str) -> CommentOp:
+    """Parse 'addr=comment' format for comments"""
+    if "=" in s:
+        addr, comment = s.split("=", 1)
+        return {"addr": addr.strip(), "comment": comment.strip()}
+    raise ValueError(f"Invalid format: {s} (expected 'addr=comment')")
+
+
+def parse_asm_patch_op(s: str) -> AsmPatchOp:
+    """Parse 'addr=asm' format for assembly patches"""
+    if "=" in s:
+        addr, asm = s.split("=", 1)
+        return {"addr": addr.strip(), "asm": asm.strip()}
+    raise ValueError(f"Invalid format: {s} (expected 'addr=asm')")
+
+
+def parse_breakpoint_op(s: str) -> BreakpointOp:
+    """Parse 'addr=enabled' format for breakpoints"""
+    if "=" in s:
+        addr, enabled = s.split("=", 1)
+        enabled_lower = enabled.strip().lower()
+        return {
+            "addr": addr.strip(),
+            "enabled": enabled_lower in ("true", "1", "yes", "on"),
+        }
+    raise ValueError(f"Invalid format: {s} (expected 'addr=true/false')")
+
+
+def parse_struct_read(s: str) -> StructRead:
+    """Parse 'addr:struct_name' format for struct reads"""
+    if ":" in s:
+        addr, struct = s.split(":", 1)
+        return {"addr": addr.strip(), "struct": struct.strip()}
+    raise ValueError(f"Invalid format: {s} (expected 'addr:struct_name')")
+
+
+def parse_struct_field_query(s: str) -> StructFieldQuery:
+    """Parse 'struct.field' or 'struct:field' format for field xrefs"""
+    for sep in [".", ":"]:
+        if sep in s:
+            struct, field = s.split(sep, 1)
+            return {"struct": struct.strip(), "field": field.strip()}
+    raise ValueError(f"Invalid format: {s} (expected 'struct.field' or 'struct:field')")
+
+
+def parse_path_query(s: str) -> PathQuery:
+    """Parse 'source->target' or 'source:target' format for path queries"""
+    for sep in ["->", ":"]:
+        if sep in s:
+            source, target = s.split(sep, 1)
+            return {"source": source.strip(), "target": target.strip()}
+    raise ValueError(f"Invalid format: {s} (expected 'source->target' or 'source:target')")
+
+
+def parse_stack_var_decl(s: str) -> StackVarDecl:
+    """Parse 'addr:offset:name:type' format for stack variable declaration"""
+    parts = s.split(":")
+    if len(parts) >= 4:
+        return {
+            "addr": parts[0].strip(),
+            "offset": parts[1].strip(),
+            "name": parts[2].strip(),
+            "ty": ":".join(parts[3:]).strip(),  # Type may contain colons
+        }
+    raise ValueError(f"Invalid format: {s} (expected 'addr:offset:name:type')")
+
+
+def parse_stack_var_delete(s: str) -> StackVarDelete:
+    """Parse 'addr:name' format for stack variable deletion"""
+    if ":" in s:
+        addr, name = s.split(":", 1)
+        return {"addr": addr.strip(), "name": name.strip()}
+    raise ValueError(f"Invalid format: {s} (expected 'addr:name')")
+
+
+def parse_insn_pattern(s: str) -> InsnPattern:
+    """Parse instruction pattern string.
+
+    Formats:
+    - 'mnem op_any=value' e.g. 'call op_any=0x1800b35a8'
+    - 'mnem op0=val op1=val' e.g. 'mov op0=0x10 op1=0x20'
+    - 'mnem:op_any=value' e.g. 'call:op_any=0x1800b35a8'
+    - Just mnemonic: 'call' or 'ret'
+    """
+    s = s.strip()
+    result: InsnPattern = {}
+
+    # Split by space or colon to get parts
+    if ":" in s and "=" in s:
+        # Format: mnem:key=value,key=value
+        mnem, rest = s.split(":", 1)
+        result["mnem"] = mnem.strip()
+        for part in rest.split(","):
+            part = part.strip()
+            if "=" in part:
+                key, val = part.split("=", 1)
+                key = key.strip()
+                val = val.strip()
+                if key in ("op0", "op1", "op2", "op_any"):
+                    result[key] = int(val, 0)  # type: ignore
+    elif " " in s:
+        # Format: mnem key=value key=value
+        parts = s.split()
+        result["mnem"] = parts[0]
+        for part in parts[1:]:
+            if "=" in part:
+                key, val = part.split("=", 1)
+                key = key.strip()
+                val = val.strip()
+                if key in ("op0", "op1", "op2", "op_any"):
+                    result[key] = int(val, 0)  # type: ignore
+    else:
+        # Just mnemonic
+        result["mnem"] = s
+
+    return result
+
+
+def parse_string_filter(s: str) -> StringFilter:
+    """Parse string filter.
+
+    Formats:
+    - 'pattern' - just a pattern to match
+    - 'pattern,min_length=N' - pattern with minimum length
+    - 'min_length=N' - just minimum length
+    """
+    s = s.strip()
+    result: StringFilter = {}
+
+    if "," in s:
+        parts = s.split(",")
+        for part in parts:
+            part = part.strip()
+            if "=" in part:
+                key, val = part.split("=", 1)
+                if key.strip() == "min_length":
+                    result["min_length"] = int(val.strip())
+            else:
+                result["pattern"] = part
+    elif "=" in s:
+        key, val = s.split("=", 1)
+        if key.strip() == "min_length":
+            result["min_length"] = int(val.strip())
+        else:
+            result["pattern"] = s
+    else:
+        result["pattern"] = s
+
+    return result
 
 
 def looks_like_address(s: str) -> bool:

@@ -30,6 +30,9 @@ from .utils import (
     normalize_list_input,
     normalize_dict_list,
     parse_address,
+    parse_breakpoint_op,
+    parse_addr_size,
+    parse_addr_data,
 )
 
 
@@ -310,10 +313,15 @@ def dbg_delete_bp(
 @tool
 @idaread
 @unsafe
-def dbg_enable_bp(items: list[BreakpointOp] | BreakpointOp) -> list[dict]:
+def dbg_enable_bp(
+    items: Annotated[
+        list[BreakpointOp] | BreakpointOp | str,
+        "Breakpoint operations. Accepts list of {addr, enabled} dicts or string shortcut: 'addr=true;addr2=false'",
+    ],
+) -> list[dict]:
     """Enable/disable breakpoints"""
 
-    items = normalize_dict_list(items)
+    items = normalize_dict_list(items, parse_breakpoint_op)
 
     results = []
     for item in items:
@@ -526,10 +534,15 @@ def dbg_callstack() -> list[dict[str, str]]:
 @tool
 @idaread
 @unsafe
-def dbg_read_mem(regions: list[MemoryRead] | MemoryRead) -> list[dict]:
+def dbg_read_mem(
+    regions: Annotated[
+        list[MemoryRead] | MemoryRead | str,
+        "Memory regions to read. Accepts list of {addr, size} dicts or string shortcut: 'addr:size;addr2:size2'",
+    ],
+) -> list[dict]:
     """Read debug memory"""
 
-    regions = normalize_dict_list(regions)
+    regions = normalize_dict_list(regions, parse_addr_size)
     dbg_ensure_running()
     results = []
 
@@ -569,10 +582,15 @@ def dbg_read_mem(regions: list[MemoryRead] | MemoryRead) -> list[dict]:
 @tool
 @idaread
 @unsafe
-def dbg_write_mem(regions: list[MemoryPatch] | MemoryPatch) -> list[dict]:
+def dbg_write_mem(
+    regions: Annotated[
+        list[MemoryPatch] | MemoryPatch | str,
+        "Memory regions to write. Accepts list of {addr, data} dicts or string shortcut: 'addr=hexdata;addr2=hexdata2'",
+    ],
+) -> list[dict]:
     """Write debug memory"""
 
-    regions = normalize_dict_list(regions)
+    regions = normalize_dict_list(regions, parse_addr_data)
     dbg_ensure_running()
     results = []
 

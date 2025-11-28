@@ -24,8 +24,9 @@ def _mcp_action_logger(action_type: str, name: str, arguments: dict | None, resu
         args_str = ", ".join(args_parts)
 
     if is_error:
-        # Truncate error message if too long
+        # Print full error to console, truncated version to IDA output
         error_str = str(result)
+        print(f"[MCP] {action_type} ERROR: {name}({args_str}) -> {error_str}")
         if len(error_str) > 100:
             error_str = error_str[:97] + "..."
         ida_kernwin.msg(f"[MCP] {action_type} ERROR: {name}({args_str}) -> {error_str}\n")
