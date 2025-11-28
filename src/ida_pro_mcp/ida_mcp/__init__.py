@@ -30,7 +30,7 @@ from . import api_resources
 # Re-export key components for external use
 from .sync import idaread, idawrite, IDAError, IDASyncError
 from .rpc import MCP_SERVER, MCP_UNSAFE, tool, unsafe, resource
-from .http import IdaMcpHttpRequestHandler
+from .ida_http import IdaMcpHttpRequestHandler
 
 __all__ = [
     # Infrastructure modules

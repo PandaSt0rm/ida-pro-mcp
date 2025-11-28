@@ -1061,7 +1061,7 @@ def decompile_checked(addr: int):
     if not func:
         raise IDAError(
             f"Address {hex(addr)} is not inside a function. "
-            "Create a function first with IDA's 'Make Function' command (P key), "
+            "Use the `make_function` tool to create a function at this address, "
             "or verify the address is correct."
         )
 
