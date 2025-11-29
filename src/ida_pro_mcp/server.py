@@ -22,8 +22,9 @@ else:
 
     sys.path.pop(0)  # Clean up
 
-IDA_HOST = "127.0.0.1"
-IDA_PORT = 13337
+# Default IDA RPC server settings (can be overridden via environment variables)
+IDA_HOST = os.environ.get("IDA_MCP_HOST", "127.0.0.1")
+IDA_PORT = int(os.environ.get("IDA_MCP_PORT", "13337"))
 # Timeout for forwarding calls from the outer CLI to the in-IDA HTTP server.
 # Some IDA operations (e.g., large searches) can legitimately take many seconds,
 # so keep this generous to avoid spurious timeouts.
@@ -150,36 +151,59 @@ def copy_python_env(env: dict[str, str]):
     return result
 
 
-def generate_mcp_config(*, stdio: bool):
+# GitHub repo URL for uvx installation
+GITHUB_REPO = "https://github.com/PandaSt0rm/ida-pro-mcp"
+
+
+def generate_mcp_config(*, stdio: bool, dev: bool = False):
     if stdio:
-        mcp_config = {
-            "command": get_python_executable(),
-            "args": [
-                __file__,
-                "--ida-rpc",
-                f"http://{IDA_HOST}:{IDA_PORT}",
-            ],
-        }
+        if dev:
+            # Development mode: use local source with uv run
+            # SCRIPT_DIR is src/ida_pro_mcp, go up twice to reach project root
+            project_root = os.path.dirname(os.path.dirname(SCRIPT_DIR))
+            mcp_config = {
+                "command": "uv",
+                "args": [
+                    "--directory",
+                    project_root,
+                    "run",
+                    "ida-pro-mcp",
+                ],
+            }
+        else:
+            # Production mode: use uvx from git
+            mcp_config = {
+                "command": "uvx",
+                "args": [
+                    "--from",
+                    f"git+{GITHUB_REPO}",
+                    "ida-pro-mcp",
+                ],
+            }
+        # Only add env vars if host/port differ from defaults
         env = {}
-        if copy_python_env(env):
-            print("[WARNING] Custom Python environment variables detected")
+        if IDA_HOST != "127.0.0.1":
+            env["IDA_MCP_HOST"] = IDA_HOST
+        if IDA_PORT != 13337:
+            env["IDA_MCP_PORT"] = str(IDA_PORT)
+        if env:
             mcp_config["env"] = env
         return mcp_config
     else:
         return {"type": "http", "url": f"http://{IDA_HOST}:{IDA_PORT}/mcp"}
 
 
-def print_mcp_config():
+def print_mcp_config(*, dev: bool = False):
     print("[HTTP MCP CONFIGURATION]")
     print(
         json.dumps(
-            {"mcpServers": {mcp.name: generate_mcp_config(stdio=False)}}, indent=2
+            {"mcpServers": {mcp.name: generate_mcp_config(stdio=False, dev=dev)}}, indent=2
         )
     )
     print("\n[STDIO MCP CONFIGURATION]")
     print(
         json.dumps(
-            {"mcpServers": {mcp.name: generate_mcp_config(stdio=True)}}, indent=2
+            {"mcpServers": {mcp.name: generate_mcp_config(stdio=True, dev=dev)}}, indent=2
         )
     )
 
@@ -207,7 +231,7 @@ def _apply_timeout_defaults(client_name: str, is_toml: bool, entry: dict):
     # Other clients: no documented timeout field; leave untouched
 
 
-def install_mcp_servers(*, stdio: bool = False, uninstall=False, quiet=False):
+def install_mcp_servers(*, stdio: bool = False, uninstall=False, quiet=False, dev: bool = False):
     # Map client names to their JSON key paths for clients that don't use "mcpServers"
     # Format: client_name -> (top_level_key, nested_key)
     # None means use default "mcpServers" at top level
@@ -703,7 +727,7 @@ def install_mcp_servers(*, stdio: bool = False, uninstall=False, quiet=False):
                 continue
             del mcp_servers[mcp.name]
         else:
-            mcp_servers[mcp.name] = generate_mcp_config(stdio=stdio)
+            mcp_servers[mcp.name] = generate_mcp_config(stdio=stdio, dev=dev)
             _apply_timeout_defaults(name, is_toml, mcp_servers[mcp.name])
 
         # Atomic write: temp file + rename
@@ -876,6 +900,11 @@ def main():
     parser.add_argument(
         "--config", action="store_true", help="Generate MCP config JSON"
     )
+    parser.add_argument(
+        "--dev",
+        action="store_true",
+        help="Development mode: use local source with 'uv run' instead of uvx from git",
+    )
     args = parser.parse_args()
 
     # Parse IDA RPC server argument
@@ -891,7 +920,7 @@ def main():
 
     if args.install:
         install_ida_plugin(allow_ida_free=args.allow_ida_free)
-        install_mcp_servers(stdio=(args.transport == "stdio"))
+        install_mcp_servers(stdio=(args.transport == "stdio"), dev=args.dev)
         return
 
     if args.uninstall:
@@ -900,7 +929,7 @@ def main():
         return
 
     if args.config:
-        print_mcp_config()
+        print_mcp_config(dev=args.dev)
         return
 
     try:
