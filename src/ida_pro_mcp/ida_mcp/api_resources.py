@@ -6,6 +6,7 @@ Use tools for actions that modify state or perform expensive computations.
 
 from typing import Annotated
 
+import ida_entry
 import ida_funcs
 import ida_nalt
 import ida_segment
@@ -253,16 +254,15 @@ def import_name_resource(name: Annotated[str, "Import name"]) -> dict:
 
     return {"error": f"Import not found: {name}"}
 
-
 @resource("ida://export/{name}")
 @idasync
 def export_name_resource(name: Annotated[str, "Export name"]) -> dict:
     """Get specific export details by name"""
-    entry_count = ida_nalt.get_entry_qty()
+    entry_count = ida_entry.get_entry_qty()
     for i in range(entry_count):
-        ordinal = ida_nalt.get_entry_ordinal(i)
-        ea = ida_nalt.get_entry(ordinal)
-        entry_name = ida_nalt.get_entry_name(ordinal)
+        ordinal = ida_entry.get_entry_ordinal(i)
+        ea = ida_entry.get_entry(ordinal)
+        entry_name = ida_entry.get_entry_name(ordinal)
 
         if entry_name == name:
             return {
