@@ -18,7 +18,7 @@ import ida_problems
 import ida_tryblks
 import ida_fixup
 from .rpc import tool
-from .sync import idaread, is_window_active
+from .sync import idaread, is_window_active, IDAError
 from .utils import (
     parse_address,
     normalize_list_input,
@@ -292,26 +292,45 @@ def disasm(
 @idaread
 def xrefs_to(
     addrs: Annotated[list[str] | str, "Addresses to find cross-references to"],
+    limit: Annotated[int, "Max xrefs per address (default: 1000, max: 10000)"] = 1000,
+    offset: Annotated[int, "Skip first N xrefs (default: 0)"] = 0,
 ) -> list[dict]:
     """Get all cross-references to specified addresses"""
     addrs = normalize_list_input(addrs)
+
+    # Enforce max limit
+    if limit <= 0 or limit > 10000:
+        limit = 10000
+
     results = []
 
     for addr in addrs:
         try:
-            xrefs = []
+            all_xrefs = []
             xref: ida_xref.xrefblk_t
             for xref in idautils.XrefsTo(parse_address(addr)):
-                xrefs += [
+                all_xrefs.append(
                     Xref(
                         addr=hex(xref.frm),
                         type="code" if xref.iscode else "data",
                         fn=get_function(xref.frm, raise_error=False),
                     )
-                ]
-            results.append({"addr": addr, "xrefs": xrefs})
+                )
+
+            # Apply pagination
+            total_xrefs = len(all_xrefs)
+            xrefs = all_xrefs[offset : offset + limit]
+            has_more = offset + limit < total_xrefs
+
+            results.append({
+                "addr": addr,
+                "xrefs": xrefs,
+                "count": len(xrefs),
+                "total_xrefs": total_xrefs,
+                "cursor": {"next": offset + limit} if has_more else {"done": True},
+            })
         except Exception as e:
-            results.append({"addr": addr, "xrefs": None, "error": str(e)})
+            results.append({"addr": addr, "xrefs": None, "error": str(e), "cursor": {"done": True}})
 
     return results
 
@@ -323,9 +342,15 @@ def xrefs_to_field(
         list[StructFieldQuery] | StructFieldQuery | str,
         "Field xref queries. Accepts list of {struct, field} dicts or string shortcut: 'struct.field;struct2.field2'",
     ],
+    limit: Annotated[int, "Max xrefs per query (default: 1000, max: 10000)"] = 1000,
+    offset: Annotated[int, "Skip first N xrefs (default: 0)"] = 0,
 ) -> list[dict]:
     """Get cross-references to structure fields"""
     queries = normalize_dict_list(queries, parse_struct_field_query)
+
+    # Enforce max limit
+    if limit <= 0 or limit > 10000:
+        limit = 10000
 
     results = []
     til = ida_typeinf.get_idati()
@@ -336,6 +361,7 @@ def xrefs_to_field(
                 "field": q.get("field"),
                 "xrefs": [],
                 "error": "Failed to retrieve type library",
+                "cursor": {"done": True},
             }
             for q in queries
         ]
@@ -355,6 +381,7 @@ def xrefs_to_field(
                         "field": field_name,
                         "xrefs": [],
                         "error": f"Struct '{struct_name}' not found",
+                        "cursor": {"done": True},
                     }
                 )
                 continue
@@ -367,6 +394,7 @@ def xrefs_to_field(
                         "field": field_name,
                         "xrefs": [],
                         "error": f"Field '{field_name}' not found in '{struct_name}'",
+                        "cursor": {"done": True},
                     }
                 )
                 continue
@@ -379,21 +407,35 @@ def xrefs_to_field(
                         "field": field_name,
                         "xrefs": [],
                         "error": "Unable to get tid",
+                        "cursor": {"done": True},
                     }
                 )
                 continue
 
-            xrefs = []
+            all_xrefs = []
             xref: ida_xref.xrefblk_t
             for xref in idautils.XrefsTo(tid):
-                xrefs += [
+                all_xrefs.append(
                     Xref(
                         addr=hex(xref.frm),
                         type="code" if xref.iscode else "data",
                         fn=get_function(xref.frm, raise_error=False),
                     )
-                ]
-            results.append({"struct": struct_name, "field": field_name, "xrefs": xrefs})
+                )
+
+            # Apply pagination
+            total_xrefs = len(all_xrefs)
+            xrefs = all_xrefs[offset : offset + limit]
+            has_more = offset + limit < total_xrefs
+
+            results.append({
+                "struct": struct_name,
+                "field": field_name,
+                "xrefs": xrefs,
+                "count": len(xrefs),
+                "total_xrefs": total_xrefs,
+                "cursor": {"next": offset + limit} if has_more else {"done": True},
+            })
         except Exception as e:
             results.append(
                 {
@@ -401,6 +443,7 @@ def xrefs_to_field(
                     "field": field_name,
                     "xrefs": [],
                     "error": str(e),
+                    "cursor": {"done": True},
                 }
             )
 
@@ -1144,13 +1187,27 @@ def find_insn_operands(
     return results
 
 
+def _resolve_operand_value(val: int | str | None) -> int | None:
+    """Resolve operand value - convert symbol names to addresses."""
+    if val is None:
+        return None
+    if isinstance(val, int):
+        return val
+    # Try to resolve symbol name to address
+    ea = idaapi.get_name_ea(idaapi.BADADDR, val)
+    if ea == idaapi.BADADDR:
+        raise IDAError(f"Symbol not found: {val}")
+    return ea
+
+
 def _find_insn_pattern(pattern: dict) -> list[str]:
     """Internal helper to find instructions matching a pattern"""
     mnem = pattern.get("mnem", "").lower()
-    op0_val = pattern.get("op0")
-    op1_val = pattern.get("op1")
-    op2_val = pattern.get("op2")
-    any_val = pattern.get("op_any")
+    # Resolve operand values (convert symbol names to addresses)
+    op0_val = _resolve_operand_value(pattern.get("op0"))
+    op1_val = _resolve_operand_value(pattern.get("op1"))
+    op2_val = _resolve_operand_value(pattern.get("op2"))
+    any_val = _resolve_operand_value(pattern.get("op_any"))
 
     matches = []
 
@@ -1471,15 +1528,28 @@ def analyze_strings(
 @idaread
 def xrefs_from(
     addrs: Annotated[list[str] | str, "Addresses to find cross-references from"],
+    limit: Annotated[int, "Max xrefs per address (default: 1000, max: 10000)"] = 1000,
+    offset: Annotated[int, "Skip first N xrefs (default: 0)"] = 0,
 ) -> list[dict]:
     """Get all cross-references from specified addresses"""
     addrs = normalize_list_input(addrs)
+
+    # Enforce max limit
+    if limit <= 0 or limit > 10000:
+        limit = 10000
+
     results = []
 
     for addr in addrs:
         try:
             ea = parse_address(addr)
-            xrefs = get_xrefs_from_internal(ea)
+            all_xrefs = get_xrefs_from_internal(ea)
+
+            # Apply pagination
+            total_xrefs = len(all_xrefs)
+            paginated_xrefs = all_xrefs[offset : offset + limit]
+            has_more = offset + limit < total_xrefs
+
             results.append({
                 "addr": addr,
                 "xrefs": [
@@ -1488,13 +1558,15 @@ def xrefs_from(
                         "type": x["type"],
                         "function": x.get("fn"),
                     }
-                    for x in xrefs
+                    for x in paginated_xrefs
                 ],
-                "count": len(xrefs),
+                "count": len(paginated_xrefs),
+                "total_xrefs": total_xrefs,
+                "cursor": {"next": offset + limit} if has_more else {"done": True},
                 "error": None,
             })
         except Exception as e:
-            results.append({"addr": addr, "xrefs": [], "count": 0, "error": str(e)})
+            results.append({"addr": addr, "xrefs": [], "count": 0, "error": str(e), "cursor": {"done": True}})
 
     return results
 

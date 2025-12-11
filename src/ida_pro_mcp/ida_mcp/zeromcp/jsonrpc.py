@@ -1,8 +1,12 @@
 import json
+import time
 import inspect
 import traceback
+import logging
 from typing import Any, Callable, Literal, get_type_hints, get_origin, get_args, Union, TypedDict, TypeAlias, NotRequired, is_typeddict
 from types import UnionType
+
+logger = logging.getLogger("ida_mcp.rpc")
 
 JsonRpcId: TypeAlias = str | int | float | None
 JsonRpcParams: TypeAlias = dict[str, Any] | list[Any] | None
@@ -53,6 +57,20 @@ class JsonRpcException(Exception):
         self.message = message
         self.data = data
 
+
+def _summarize_params(params: JsonRpcParams, max_len: int = 100) -> str:
+    """Create a brief summary of params for logging."""
+    if params is None:
+        return ""
+    try:
+        s = json.dumps(params, default=str)
+        if len(s) > max_len:
+            return s[:max_len] + "..."
+        return s
+    except Exception:
+        return "<unprintable>"
+
+
 class JsonRpcRegistry:
     def __init__(self):
         self.methods: dict[str, Callable] = {}
@@ -70,6 +88,7 @@ class JsonRpcRegistry:
             if not isinstance(request, dict):
                 return self._error(None, -32600, "Invalid request: must be a JSON object")
         except Exception as e:
+            logger.error(f"JSON parse error: {e}")
             return self._error(None, -32700, "JSON parse error", str(e))
 
         if request.get("jsonrpc") != "2.0":
@@ -84,8 +103,16 @@ class JsonRpcRegistry:
         request_id: JsonRpcId = request.get("id")
         is_notification = "id" not in request
         params: JsonRpcParams = request.get("params")
+
+        # Log the request
+        params_summary = _summarize_params(params)
+        logger.info(f">>> {method}({params_summary}) [id={request_id}]")
+        start_time = time.time()
+
         try:
             result = self._call(method, params)
+            elapsed = time.time() - start_time
+            logger.info(f"<<< {method} completed in {elapsed:.3f}s [id={request_id}]")
             if is_notification:
                 return None
             return {
@@ -94,10 +121,15 @@ class JsonRpcRegistry:
                 "id": request_id,
             }
         except JsonRpcException as e:
+            elapsed = time.time() - start_time
+            logger.warning(f"<<< {method} failed ({elapsed:.3f}s): [{e.code}] {e.message} [id={request_id}]")
             if is_notification:
                 return None
             return self._error(request_id, e.code, e.message, e.data)
         except Exception as e:
+            elapsed = time.time() - start_time
+            logger.error(f"<<< {method} exception ({elapsed:.3f}s): {type(e).__name__}: {e} [id={request_id}]")
+            logger.debug(f"Traceback:\n{traceback.format_exc()}")
             if is_notification:
                 return None
             error = self.map_exception(e)

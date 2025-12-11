@@ -4,6 +4,7 @@ import time
 import uuid
 import json
 import inspect
+import logging
 import threading
 import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer, HTTPServer
@@ -13,6 +14,8 @@ from urllib.parse import urlparse, parse_qs
 from io import BufferedIOBase
 
 from .jsonrpc import JsonRpcRegistry, JsonRpcError, JsonRpcException
+
+logger = logging.getLogger("ida_mcp.http")
 
 class McpToolError(Exception):
     def __init__(self, message: str):
@@ -279,8 +282,11 @@ class McpServer:
 
     def serve(self, host: str, port: int, *, background = True, request_handler = McpHttpRequestHandler):
         if self._running:
+            logger.warning("Server is already running")
             print("[MCP] Server is already running")
             return
+
+        logger.info(f"Starting MCP server on {host}:{port}")
 
         # Create server with deferred binding
         assert issubclass(request_handler, McpHttpRequestHandler)
@@ -296,8 +302,9 @@ class McpServer:
             # Bind and activate in main thread - errors propagate synchronously
             self._http_server.server_bind()
             self._http_server.server_activate()
-        except OSError:
+        except OSError as e:
             # Cleanup on binding failure
+            logger.error(f"Failed to bind server: {e}")
             self._http_server.server_close()
             self._http_server = None
             raise
@@ -305,6 +312,7 @@ class McpServer:
         # Only start thread after successful bind
         self._running = True
 
+        logger.info(f"Server started: Streamable HTTP http://{host}:{port}/mcp, SSE http://{host}:{port}/sse")
         print("[MCP] Server started:")
         print(f"  Streamable HTTP: http://{host}:{port}/mcp")
         print(f"  SSE: http://{host}:{port}/sse")
@@ -313,10 +321,13 @@ class McpServer:
             try:
                 self._http_server.serve_forever()  # type: ignore
             except Exception as e:
+                logger.error(f"Server error: {e}")
+                logger.debug(f"Traceback:\n{traceback.format_exc()}")
                 print(f"[MCP] Server error: {e}")
                 traceback.print_exc()
             finally:
                 self._running = False
+                logger.info("Server stopped")
 
         if background:
             self._server_thread = threading.Thread(target=serve_forever, daemon=True)
@@ -328,6 +339,7 @@ class McpServer:
         if not self._running:
             return
 
+        logger.info("Stopping MCP server...")
         self._running = False
 
         # Close all SSE connections
@@ -347,7 +359,7 @@ class McpServer:
             self._server_thread.join()
             self._server_thread = None
 
-        print("[MCP] Server stopped")
+        logger.info("MCP server stopped")
 
     def stdio(self, stdin: BinaryIO | None = None, stdout: BinaryIO | None = None):
         stdin = stdin or sys.stdin.buffer

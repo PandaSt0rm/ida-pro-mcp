@@ -32,6 +32,7 @@ from .utils import (
     create_demangled_to_ea_map,
     paginate,
     pattern_filter,
+    parse_list_query,
     DEMANGLED_TO_EA,
 )
 from .sync import IDAError
@@ -255,9 +256,7 @@ def list_funcs(
     ],
 ) -> list[Page[Function]]:
     """List functions"""
-    queries = normalize_dict_list(
-        queries, lambda s: {"offset": 0, "count": 50, "filter": s}
-    )
+    queries = normalize_dict_list(queries, parse_list_query)
     all_functions = [get_function(addr) for addr in idautils.Functions()]
 
     results = []
@@ -285,9 +284,7 @@ def list_globals(
     ],
 ) -> list[Page[Global]]:
     """List globals"""
-    queries = normalize_dict_list(
-        queries, lambda s: {"offset": 0, "count": 50, "filter": s}
-    )
+    queries = normalize_dict_list(queries, parse_list_query)
     all_globals: list[Global] = []
     for addr, name in idautils.Names():
         if not idaapi.get_func(addr) and name is not None:
@@ -347,9 +344,7 @@ def strings(
     ],
 ) -> list[Page[String]]:
     """List strings"""
-    queries = normalize_dict_list(
-        queries, lambda s: {"offset": 0, "count": 50, "filter": s}
-    )
+    queries = normalize_dict_list(queries, parse_list_query)
     # Use cached strings instead of rebuilding every time
     all_strings = _get_cached_strings()
 
@@ -475,9 +470,7 @@ def exports(
     Exports are functions or data that this binary makes available
     to other modules that may load it.
     """
-    queries = normalize_dict_list(
-        queries, lambda s: {"offset": 0, "count": 50, "filter": s}
-    )
+    queries = normalize_dict_list(queries, parse_list_query)
     results = []
 
     # Build export list

@@ -153,10 +153,10 @@ class InsnPattern(TypedDict, total=False):
     """Instruction pattern for operand search"""
 
     mnem: Annotated[str, "Instruction mnemonic to match"]
-    op0: Annotated[int, "Value to match in first operand"]
-    op1: Annotated[int, "Value to match in second operand"]
-    op2: Annotated[int, "Value to match in third operand"]
-    op_any: Annotated[int, "Value to match in any operand"]
+    op0: Annotated[int | str, "Value to match in first operand (int or symbol name)"]
+    op1: Annotated[int | str, "Value to match in second operand (int or symbol name)"]
+    op2: Annotated[int | str, "Value to match in third operand (int or symbol name)"]
+    op_any: Annotated[int | str, "Value to match in any operand (int or symbol name)"]
 
 
 class NumberConversion(TypedDict, total=False):
@@ -453,14 +453,27 @@ def normalize_dict_list(
         except (json.JSONDecodeError, ValueError):
             pass
 
-        # Not JSON - split by semicolon or comma
-        parts = []
-        for sep in [";", ","]:
-            if sep in value:
-                parts = [s.strip() for s in value.split(sep) if s.strip()]
-                break
-        if not parts:
-            parts = [value.strip()] if value.strip() else []
+        # Not JSON - split by semicolon or comma. Some parsers may want to treat
+        # key/value commas as part of a single shortcut string (e.g. list queries).
+        if string_parser and getattr(string_parser, "__name__", "") == "parse_list_query":
+            if re.search(r"\b(filter|offset|count)\s*[:=]", value, re.IGNORECASE):
+                parts = [value.strip()]
+            else:
+                parts = []
+                for sep in [";", ","]:
+                    if sep in value:
+                        parts = [s.strip() for s in value.split(sep) if s.strip()]
+                        break
+                if not parts:
+                    parts = [value.strip()] if value.strip() else []
+        else:
+            parts = []
+            for sep in [";", ","]:
+                if sep in value:
+                    parts = [s.strip() for s in value.split(sep) if s.strip()]
+                    break
+            if not parts:
+                parts = [value.strip()] if value.strip() else []
 
         if not parts:
             return [{}]
@@ -476,6 +489,67 @@ def normalize_dict_list(
 # ============================================================================
 # String Parsers for normalize_dict_list
 # ============================================================================
+
+
+def parse_list_query(s: str) -> ListQuery:
+    """Parse list query string with validation.
+
+    Valid formats:
+    - Simple glob pattern: '*compil*' or 'main'
+    - JSON object: '{"filter": "*compil*", "offset": 0, "count": 50}'
+    - Legacy key/value shortcuts: 'filter:*compil*,offset:0,count:50'
+    """
+    s = s.strip()
+    if not s:
+        return {"offset": 0, "count": 50, "filter": ""}
+
+    # Try JSON parse first
+    if s.startswith("{"):
+        try:
+            parsed = json.loads(s)
+            if isinstance(parsed, dict):
+                return {
+                    "offset": parsed.get("offset", 0),
+                    "count": parsed.get("count", 50),
+                    "filter": parsed.get("filter", ""),
+                }
+        except json.JSONDecodeError:
+            pass
+
+    # Legacy key:value / key=value shortcuts (backward-compatible)
+    if re.search(r"\b(filter|offset|count)\s*[:=]", s, re.IGNORECASE):
+        filter_pattern = ""
+        offset = 0
+        count = 50
+
+        # Split into key/value chunks by comma/semicolon or whitespace before a key
+        chunks = re.split(r"[;,]\s*|\s+(?=\w+\s*[:=])", s)
+        for chunk in chunks:
+            chunk = chunk.strip()
+            if not chunk:
+                continue
+            m = re.match(r"^(filter|offset|count)\s*[:=]\s*(.+)$", chunk, re.IGNORECASE)
+            if not m:
+                continue
+            key = m.group(1).lower()
+            val = m.group(2).strip()
+            if key == "filter":
+                filter_pattern = val
+            elif key == "offset":
+                try:
+                    offset = int(val, 0)
+                except ValueError:
+                    pass
+            elif key == "count":
+                try:
+                    count = int(val, 0)
+                except ValueError:
+                    pass
+
+        return {"offset": offset, "count": count, "filter": filter_pattern}
+
+    # Valid simple pattern
+    return {"offset": 0, "count": 50, "filter": s}
 
 
 def parse_addr_value(s: str, value_key: str = "value") -> dict:
@@ -578,14 +652,27 @@ def parse_stack_var_delete(s: str) -> StackVarDelete:
     raise ValueError(f"Invalid format: {s} (expected 'addr:name')")
 
 
+def _parse_operand_value(val: str) -> int | str:
+    """Parse operand value - returns int if numeric, otherwise string (symbol name)."""
+    try:
+        return int(val, 0)
+    except ValueError:
+        # Not a number - treat as symbol name to be resolved later
+        return val
+
+
 def parse_insn_pattern(s: str) -> InsnPattern:
     """Parse instruction pattern string.
 
     Formats:
-    - 'mnem op_any=value' e.g. 'call op_any=0x1800b35a8'
+    - 'mnem op_any=value' e.g. 'call op_any=0x1800b35a8' or 'call op_any=inflate'
     - 'mnem op0=val op1=val' e.g. 'mov op0=0x10 op1=0x20'
     - 'mnem:op_any=value' e.g. 'call:op_any=0x1800b35a8'
     - Just mnemonic: 'call' or 'ret'
+
+    Operand values can be:
+    - Numeric (hex with 0x prefix, decimal, etc.)
+    - Symbol names (function names, labels) - resolved at search time
     """
     s = s.strip()
     result: InsnPattern = {}
@@ -602,7 +689,7 @@ def parse_insn_pattern(s: str) -> InsnPattern:
                 key = key.strip()
                 val = val.strip()
                 if key in ("op0", "op1", "op2", "op_any"):
-                    result[key] = int(val, 0)  # type: ignore
+                    result[key] = _parse_operand_value(val)  # type: ignore
     elif " " in s:
         # Format: mnem key=value key=value
         parts = s.split()
@@ -613,9 +700,20 @@ def parse_insn_pattern(s: str) -> InsnPattern:
                 key = key.strip()
                 val = val.strip()
                 if key in ("op0", "op1", "op2", "op_any"):
-                    result[key] = int(val, 0)  # type: ignore
+                    result[key] = _parse_operand_value(val)  # type: ignore
     else:
-        # Just mnemonic
+        # Just mnemonic - but validate it's not a misformatted operand pattern
+        if "=" in s:
+            # Check if it's a common mistake of passing limit/offset as pattern
+            if re.match(r"^(limit|offset)\s*=", s, re.IGNORECASE):
+                raise ValueError(
+                    f"Invalid pattern '{s}': 'limit' and 'offset' are separate function parameters, "
+                    f"not part of the pattern. Use: find_insn_operands(patterns='mnem op_any=0x1234', limit=20)"
+                )
+            raise ValueError(
+                f"Invalid pattern '{s}': operand constraints require a mnemonic. "
+                f"Use 'mnem {s}' or 'mnem:{s}' format (e.g., 'call op_any=0x1234')"
+            )
         result["mnem"] = s
 
     return result

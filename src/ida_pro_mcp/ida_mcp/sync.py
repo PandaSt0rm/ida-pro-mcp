@@ -1,15 +1,18 @@
-import logging
 import queue
 import functools
+import traceback
 from enum import IntEnum
 import idaapi
 import ida_kernwin
 import idc
 from .rpc import McpToolError
+from .logging_config import get_logger
 
 # ============================================================================
 # IDA Synchronization & Error Handling
 # ============================================================================
+
+logger = get_logger("sync")
 
 ida_major, ida_minor = map(int, idaapi.get_kernel_version().split("."))
 
@@ -25,9 +28,6 @@ class IDAError(McpToolError):
 
 class IDASyncError(Exception):
     pass
-
-
-logger = logging.getLogger(__name__)
 
 
 class IDASafety(IntEnum):
@@ -46,19 +46,28 @@ def _sync_wrapper(ff, safety_mode: IDASafety):
         logger.error(error_str)
         raise IDASyncError(error_str)
 
+    func_name = ff.__name__
+    mode_name = "READ" if safety_mode == IDASafety.SAFE_READ else "WRITE"
+    logger.debug(f"[{mode_name}] Executing: {func_name}")
+
     # NOTE: This is not actually a queue, there is one item in it at most
     res_container = queue.Queue()
 
     def runned():
         if not call_stack.empty():
             last_func_name = call_stack.get()
-            error_str = f"Call stack is not empty while calling the function {ff.__name__} from {last_func_name}"
+            error_str = f"Call stack is not empty while calling the function {func_name} from {last_func_name}"
+            logger.error(error_str)
             raise IDASyncError(error_str)
 
-        call_stack.put((ff.__name__))
+        call_stack.put(func_name)
         try:
-            res_container.put(ff())
+            result = ff()
+            res_container.put(result)
+            logger.debug(f"[{mode_name}] Completed: {func_name}")
         except Exception as x:
+            logger.error(f"[{mode_name}] Exception in {func_name}: {type(x).__name__}: {x}")
+            logger.debug(f"[{mode_name}] Traceback:\n{traceback.format_exc()}")
             res_container.put(x)
         finally:
             call_stack.get()
