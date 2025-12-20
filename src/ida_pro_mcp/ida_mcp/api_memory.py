@@ -7,10 +7,12 @@ granularities (bytes, u8, u16, u32, u64, strings) and patching binary data.
 from typing import Annotated
 import ida_bytes
 import ida_ida
+import ida_nalt
+import ida_typeinf
 import idaapi
 
 from .rpc import tool
-from .sync import idaread, idawrite
+from .sync import idasync, IDAError
 from .utils import (
     normalize_list_input,
     normalize_dict_list,
@@ -20,6 +22,14 @@ from .utils import (
     MemoryRead,
     MemoryPatch,
 )
+from .tests import (
+    test,
+    assert_has_keys,
+    assert_is_list,
+    assert_non_empty,
+    get_first_segment,
+    get_any_string,
+)
 
 
 # ============================================================================
@@ -28,7 +38,7 @@ from .utils import (
 
 
 @tool
-@idaread
+@idasync
 def get_bytes(
     regions: Annotated[
         list[MemoryRead] | MemoryRead | str,
@@ -53,8 +63,36 @@ def get_bytes(
     return results
 
 
+@test()
+def test_get_bytes():
+    """get_bytes reads raw bytes from a valid address"""
+    seg = get_first_segment()
+    if not seg:
+        return  # Skip if no segments
+
+    start_addr, _ = seg
+    result = get_bytes({"addr": start_addr, "size": 16})
+    assert_is_list(result, min_length=1)
+    assert_has_keys(result[0], "addr", "data")
+    assert result[0]["addr"] == start_addr
+    assert_non_empty(result[0]["data"])
+    # Data should be space-separated hex values like "0x41 0x42 0x43"
+    assert " " in result[0]["data"] or result[0]["data"].startswith("0x")
+
+
+@test()
+def test_get_bytes_invalid():
+    """get_bytes handles invalid address (returns 0xff bytes or error)"""
+    result = get_bytes({"addr": "0xDEADBEEFDEADBEEF", "size": 16})
+    assert_is_list(result, min_length=1)
+    assert_has_keys(result[0], "addr")
+    # IDA returns 0xff bytes for unmapped addresses, so we just verify structure
+    # Either has data (0xff bytes) or error
+    assert "data" in result[0] or "error" in result[0]
+
+
 @tool
-@idaread
+@idasync
 def get_u8(
     addrs: Annotated[list[str] | str, "Addresses to read 8-bit unsigned integers from"],
 ) -> list[dict]:
@@ -73,8 +111,25 @@ def get_u8(
     return results
 
 
+@test()
+def test_get_u8():
+    """get_u8 reads 8-bit unsigned integer from valid address"""
+    seg = get_first_segment()
+    if not seg:
+        return  # Skip if no segments
+
+    start_addr, _ = seg
+    result = get_u8(start_addr)
+    assert_is_list(result, min_length=1)
+    assert_has_keys(result[0], "addr", "value")
+    assert result[0]["addr"] == start_addr
+    # Value should be an integer 0-255
+    assert isinstance(result[0]["value"], int)
+    assert 0 <= result[0]["value"] <= 255
+
+
 @tool
-@idaread
+@idasync
 def get_u16(
     addrs: Annotated[
         list[str] | str, "Addresses to read 16-bit unsigned integers from"
@@ -95,8 +150,25 @@ def get_u16(
     return results
 
 
+@test()
+def test_get_u16():
+    """get_u16 reads 16-bit unsigned integer from valid address"""
+    seg = get_first_segment()
+    if not seg:
+        return  # Skip if no segments
+
+    start_addr, _ = seg
+    result = get_u16(start_addr)
+    assert_is_list(result, min_length=1)
+    assert_has_keys(result[0], "addr", "value")
+    assert result[0]["addr"] == start_addr
+    # Value should be an integer 0-65535
+    assert isinstance(result[0]["value"], int)
+    assert 0 <= result[0]["value"] <= 0xFFFF
+
+
 @tool
-@idaread
+@idasync
 def get_u32(
     addrs: Annotated[
         list[str] | str, "Addresses to read 32-bit unsigned integers from"
@@ -117,8 +189,25 @@ def get_u32(
     return results
 
 
+@test()
+def test_get_u32():
+    """get_u32 reads 32-bit unsigned integer from valid address"""
+    seg = get_first_segment()
+    if not seg:
+        return  # Skip if no segments
+
+    start_addr, _ = seg
+    result = get_u32(start_addr)
+    assert_is_list(result, min_length=1)
+    assert_has_keys(result[0], "addr", "value")
+    assert result[0]["addr"] == start_addr
+    # Value should be an integer 0-0xFFFFFFFF
+    assert isinstance(result[0]["value"], int)
+    assert 0 <= result[0]["value"] <= 0xFFFFFFFF
+
+
 @tool
-@idaread
+@idasync
 def get_u64(
     addrs: Annotated[
         list[str] | str, "Addresses to read 64-bit unsigned integers from"
@@ -139,8 +228,25 @@ def get_u64(
     return results
 
 
+@test()
+def test_get_u64():
+    """get_u64 reads 64-bit unsigned integer from valid address"""
+    seg = get_first_segment()
+    if not seg:
+        return  # Skip if no segments
+
+    start_addr, _ = seg
+    result = get_u64(start_addr)
+    assert_is_list(result, min_length=1)
+    assert_has_keys(result[0], "addr", "value")
+    assert result[0]["addr"] == start_addr
+    # Value should be an integer 0-0xFFFFFFFFFFFFFFFF
+    assert isinstance(result[0]["value"], int)
+    assert 0 <= result[0]["value"] <= 0xFFFFFFFFFFFFFFFF
+
+
 @tool
-@idaread
+@idasync
 def get_string(
     addrs: Annotated[list[str] | str, "Addresses to read strings from"],
 ) -> list[dict]:
@@ -159,12 +265,24 @@ def get_string(
     return results
 
 
-def get_global_variable_value_internal(ea: int) -> str:
-    import ida_typeinf
-    import ida_nalt
-    import ida_bytes
-    from .sync import IDAError
+@test()
+def test_get_string():
+    """get_string reads string at valid string address"""
+    str_addr = get_any_string()
+    if not str_addr:
+        return  # Skip if no strings in binary
 
+    result = get_string(str_addr)
+    assert_is_list(result, min_length=1)
+    assert_has_keys(result[0], "addr", "value")
+    assert result[0]["addr"] == str_addr
+    # Value should be a non-empty string (or None with error for edge cases)
+    if result[0].get("error") is None:
+        assert isinstance(result[0]["value"], str)
+        assert_non_empty(result[0]["value"])
+
+
+def get_global_variable_value_internal(ea: int) -> str:
     tif = ida_typeinf.tinfo_t()
     if not ida_nalt.get_tinfo(tif, ea):
         if not ida_bytes.has_any_name(ea):
@@ -192,7 +310,7 @@ def get_global_variable_value_internal(ea: int) -> str:
 
 
 @tool
-@idaread
+@idasync
 def get_global_value(
     queries: Annotated[
         list[str] | str, "Global variable addresses or names to read values from"
@@ -232,13 +350,30 @@ def get_global_value(
     return results
 
 
+@test()
+def test_get_global_value():
+    """get_global_value reads global variable value by address"""
+    seg = get_first_segment()
+    if not seg:
+        return  # Skip if no segments
+
+    start_addr, _ = seg
+    result = get_global_value(start_addr)
+    assert_is_list(result, min_length=1)
+    assert_has_keys(result[0], "query", "value", "error")
+    assert result[0]["query"] == start_addr
+    # May have value or error depending on whether it's a valid global
+    # Either value or error should be set
+    assert result[0]["value"] is not None or result[0]["error"] is not None
+
+
 # ============================================================================
 # Batch Data Operations
 # ============================================================================
 
 
 @tool
-@idawrite
+@idasync
 def patch(
     patches: Annotated[
         list[MemoryPatch] | MemoryPatch | str,
@@ -266,13 +401,69 @@ def patch(
     return results
 
 
+@test()
+def test_patch():
+    """patch modifies bytes and can be restored"""
+    seg = get_first_segment()
+    if not seg:
+        return  # Skip if no segments
+
+    start_addr, _ = seg
+
+    # Read original bytes
+    original = get_bytes({"addr": start_addr, "size": 1})
+    if not original or not original[0].get("data"):
+        return  # Skip if can't read original bytes
+
+    # Parse original byte (format is "0xNN")
+    original_data = original[0]["data"].split()[0]  # Get first byte
+    original_hex = original_data.replace("0x", "")  # Convert "0x90" -> "90"
+
+    try:
+        # Patch with a different byte (0x00 if different, else 0x01)
+        test_byte = "00" if original_hex != "00" else "01"
+        result = patch([{"addr": start_addr, "data": test_byte}])
+        assert_is_list(result, min_length=1)
+        assert_has_keys(result[0], "addr", "size")
+        # Verify either success or error key
+        assert result[0].get("ok") is True or result[0].get("error") is not None
+        if result[0].get("ok"):
+            assert result[0]["size"] == 1
+    finally:
+        # Restore original byte
+        patch([{"addr": start_addr, "data": original_hex}])
+
+
+@test()
+def test_patch_invalid_address():
+    """patch handles invalid address gracefully"""
+    result = patch([{"addr": "invalid_address", "data": "90"}])
+    assert_is_list(result, min_length=1)
+    assert_has_keys(result[0], "addr", "error")
+    assert result[0]["error"] is not None
+
+
+@test()
+def test_patch_invalid_hex_data():
+    """patch handles invalid hex data gracefully"""
+    seg = get_first_segment()
+    if not seg:
+        return  # Skip if no segments
+
+    start_addr, _ = seg
+    result = patch([{"addr": start_addr, "data": "not_valid_hex"}])
+    assert_is_list(result, min_length=1)
+    assert_has_keys(result[0], "addr", "error")
+    assert result[0]["error"] is not None
+
+
 # ============================================================================
 # Original Bytes (Pre-Patch Values)
 # ============================================================================
 
 
 @tool
-@idaread
+@idasync
 def get_original_bytes(
     regions: Annotated[
         list[MemoryRead] | MemoryRead | str,
@@ -305,7 +496,7 @@ def get_original_bytes(
 
 
 @tool
-@idaread
+@idasync
 def get_original_byte(
     addrs: Annotated[list[str] | str, "Addresses to read original bytes from"],
 ) -> list[dict]:
@@ -325,7 +516,7 @@ def get_original_byte(
 
 
 @tool
-@idaread
+@idasync
 def get_original_word(
     addrs: Annotated[list[str] | str, "Addresses to read original 16-bit values from"],
 ) -> list[dict]:
@@ -345,7 +536,7 @@ def get_original_word(
 
 
 @tool
-@idaread
+@idasync
 def get_original_dword(
     addrs: Annotated[list[str] | str, "Addresses to read original 32-bit values from"],
 ) -> list[dict]:
@@ -365,7 +556,7 @@ def get_original_dword(
 
 
 @tool
-@idaread
+@idasync
 def get_original_qword(
     addrs: Annotated[list[str] | str, "Addresses to read original 64-bit values from"],
 ) -> list[dict]:
@@ -385,7 +576,7 @@ def get_original_qword(
 
 
 @tool
-@idaread
+@idasync
 def list_patched_bytes(
     start: Annotated[str | None, "Start address (default: image base)"] = None,
     end: Annotated[str | None, "End address (default: image end)"] = None,

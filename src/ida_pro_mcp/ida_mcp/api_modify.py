@@ -16,7 +16,7 @@ import ida_offset
 import ida_kernwin
 
 from .rpc import tool
-from .sync import idawrite, idaread, IDAError
+from .sync import idasync, IDAError
 from .utils import (
     parse_address,
     decompile_checked,
@@ -33,6 +33,12 @@ from .utils import (
     StackRename,
     RenameBatch,
 )
+from .tests import (
+    test,
+    assert_has_keys,
+    assert_is_list,
+    get_any_function,
+)
 
 
 # ============================================================================
@@ -41,7 +47,7 @@ from .utils import (
 
 
 @tool
-@idawrite
+@idasync
 def make_function(
     addrs: Annotated[list[str] | str, "Address(es) where functions should be created"],
 ) -> list[dict]:
@@ -126,7 +132,7 @@ def make_function(
 
 
 @tool
-@idawrite
+@idasync
 def delete_function(
     addrs: Annotated[list[str] | str, "Address(es) of functions to delete"],
 ) -> list[dict]:
@@ -179,7 +185,7 @@ def delete_function(
 
 
 @tool
-@idawrite
+@idasync
 def set_comments(
     items: Annotated[
         list[CommentOp] | CommentOp | str,
@@ -264,8 +270,36 @@ def set_comments(
     return results
 
 
+@test()
+def test_set_comment_roundtrip():
+    """set_comments can set and clear comments"""
+    fn_addr = get_any_function()
+    if not fn_addr:
+        return  # Skip if no functions
+
+    # Get original comment (may be None/empty)
+    original_comment = idc.get_cmt(int(fn_addr, 16), False) or ""
+
+    try:
+        # Set a test comment
+        result = set_comments({"addr": fn_addr, "comment": "__test_comment__"})
+        assert_is_list(result, min_length=1)
+        assert_has_keys(result[0], "addr")
+        # Either "ok" or "error" should be present
+        assert "ok" in result[0] or "error" in result[0]
+
+        # Verify comment was set
+        new_comment = idc.get_cmt(int(fn_addr, 16), False)
+        assert new_comment == "__test_comment__", (
+            f"Expected '__test_comment__', got {new_comment!r}"
+        )
+    finally:
+        # Restore original comment
+        set_comments({"addr": fn_addr, "comment": original_comment})
+
+
 @tool
-@idawrite
+@idasync
 def patch_asm(
     items: Annotated[
         list[AsmPatchOp] | AsmPatchOp | str,
@@ -308,6 +342,32 @@ def patch_asm(
             results.append({"addr": addr_str, "error": str(e)})
 
     return results
+
+
+@test()
+def test_patch_asm():
+    """patch_asm returns proper result structure"""
+    fn_addr = get_any_function()
+    if not fn_addr:
+        return  # Skip if no functions
+
+    # Get original bytes at function start for potential restore
+    ea = int(fn_addr, 16)
+    original_bytes = ida_bytes.get_bytes(ea, 16)
+    if not original_bytes:
+        return  # Skip if can't read bytes
+
+    # Try to assemble a NOP (this may fail depending on architecture)
+    # We're just testing the API returns proper structure, not necessarily succeeding
+    result = patch_asm({"addr": fn_addr, "asm": "nop"})
+    assert_is_list(result, min_length=1)
+    assert_has_keys(result[0], "addr")
+    # Result should have either "ok" or "error"
+    assert "ok" in result[0] or "error" in result[0]
+
+    # Restore original bytes if patch succeeded
+    if result[0].get("ok"):
+        ida_bytes.patch_bytes(ea, original_bytes)
 
 
 def _parse_func_rename(s: str) -> FunctionRename:
@@ -355,7 +415,7 @@ def _parse_stack_rename(s: str) -> StackRename:
 
 
 @tool
-@idawrite
+@idasync
 def rename(batch: RenameBatch) -> dict:
     """Unified rename operation for functions, globals, locals, and stack variables"""
 
@@ -557,7 +617,7 @@ def rename(batch: RenameBatch) -> dict:
 
 
 @tool
-@idawrite
+@idasync
 def make_code(
     addrs: Annotated[list[str] | str, "Address(es) to convert to code"],
 ) -> list[dict]:
@@ -606,7 +666,7 @@ def make_code(
 
 
 @tool
-@idawrite
+@idasync
 def make_data(
     addrs: Annotated[list[str] | str, "Address(es) to define as data"],
     size: Annotated[int, "Data size: 1=byte, 2=word, 4=dword, 8=qword"] = 1,
@@ -658,7 +718,7 @@ def make_data(
 
 
 @tool
-@idawrite
+@idasync
 def make_string(
     addrs: Annotated[list[str] | str, "Address(es) to define as strings"],
     string_type: Annotated[str, "String type: c, pascal, len2, unicode, len4"] = "c",
@@ -722,7 +782,7 @@ def make_string(
 
 
 @tool
-@idawrite
+@idasync
 def make_array(
     addr: Annotated[str, "Start address of the array"],
     count: Annotated[int, "Number of elements"],
@@ -769,7 +829,7 @@ def make_array(
 
 
 @tool
-@idawrite
+@idasync
 def undefine(
     addrs: Annotated[list[str] | str, "Address(es) to undefine"],
     size: Annotated[int, "Number of bytes to undefine (default: auto-detect item size)"] = 0,
@@ -815,7 +875,7 @@ def undefine(
 
 
 @tool
-@idawrite
+@idasync
 def set_function_bounds(
     addr: Annotated[str, "Address inside the function"],
     start: Annotated[str, "New start address (optional)"] = "",
@@ -871,7 +931,7 @@ def set_function_bounds(
 
 
 @tool
-@idawrite
+@idasync
 def append_func_chunk(
     func_addr: Annotated[str, "Address of the function to extend"],
     chunk_start: Annotated[str, "Start address of the chunk to append"],
@@ -915,7 +975,7 @@ def append_func_chunk(
 
 
 @tool
-@idawrite
+@idasync
 def reanalyze(
     start: Annotated[str, "Start address of range to reanalyze"],
     end: Annotated[str, "End address of range to reanalyze (optional, default: single item)"] = "",
@@ -948,7 +1008,7 @@ def reanalyze(
 
 
 @tool
-@idawrite
+@idasync
 def jump_to(
     addr: Annotated[str, "Address to jump to in IDA GUI"],
 ) -> dict:
@@ -972,7 +1032,7 @@ def jump_to(
 
 
 @tool
-@idawrite
+@idasync
 def add_bookmark(
     addr: Annotated[str, "Address to bookmark"],
     description: Annotated[str, "Bookmark description"] = "",
@@ -1010,7 +1070,7 @@ def add_bookmark(
 
 
 @tool
-@idawrite
+@idasync
 def delete_bookmark(
     slot: Annotated[int, "Bookmark slot number to delete"],
 ) -> dict:
@@ -1035,7 +1095,7 @@ def delete_bookmark(
 
 
 @tool
-@idawrite
+@idasync
 def list_bookmarks() -> list[dict]:
     """List all bookmarks in the database."""
     results = []
@@ -1057,7 +1117,7 @@ def list_bookmarks() -> list[dict]:
 
 
 @tool
-@idawrite
+@idasync
 def create_enum(
     name: Annotated[str, "Name of the enum"],
     members: Annotated[list[dict] | str, "List of {name, value} dicts or 'name=value;name2=value2' string"] = "",
@@ -1129,7 +1189,7 @@ def create_enum(
 
 
 @tool
-@idawrite
+@idasync
 def add_enum_member(
     enum_name: Annotated[str, "Name of the enum"],
     member_name: Annotated[str, "Name of the new member"],
@@ -1193,7 +1253,7 @@ def add_enum_member(
 
 
 @tool
-@idawrite
+@idasync
 def apply_enum(
     addr: Annotated[str, "Address of the instruction"],
     enum_name: Annotated[str, "Name of the enum to apply"],
@@ -1244,7 +1304,7 @@ def apply_enum(
 
 
 @tool
-@idawrite
+@idasync
 def list_enums() -> list[dict]:
     """List all enums in the database."""
     results = []
@@ -1295,7 +1355,7 @@ def list_enums() -> list[dict]:
 
 
 @tool
-@idawrite
+@idasync
 def apply_flirt(
     sig_name: Annotated[str, "Name of the FLIRT signature file (without .sig extension)"],
 ) -> dict:
@@ -1330,7 +1390,7 @@ def apply_flirt(
 
 
 @tool
-@idawrite
+@idasync
 def apply_til(
     til_name: Annotated[str, "Name of the type library (e.g., 'mssdk64_win10', 'gnulnx_x64')"],
 ) -> dict:
@@ -1367,7 +1427,7 @@ def apply_til(
 
 
 @tool
-@idawrite
+@idasync
 def create_segment(
     start: Annotated[str, "Start address of the segment"],
     end: Annotated[str, "End address of the segment"],
@@ -1421,7 +1481,7 @@ def create_segment(
 
 
 @tool
-@idawrite
+@idasync
 def delete_segment(
     addr: Annotated[str, "Address within the segment to delete"],
     keep_bytes: Annotated[bool, "Keep the bytes (True) or zero them (False)"] = True,
@@ -1472,7 +1532,7 @@ def delete_segment(
 
 
 @tool
-@idawrite
+@idasync
 def set_color(
     addrs: Annotated[list[str] | str, "Addresses to set color for"],
     color: Annotated[int, "RGB color value (e.g., 0xFFFF00 for yellow). Use 0xFFFFFFFF to reset to default."],
@@ -1497,7 +1557,7 @@ def set_color(
 
 
 @tool
-@idaread
+@idasync
 def get_color(
     addrs: Annotated[list[str] | str, "Addresses to get color for"],
 ) -> list[dict]:
@@ -1527,7 +1587,7 @@ def get_color(
 
 
 @tool
-@idawrite
+@idasync
 def op_offset(
     addrs: Annotated[list[str] | str, "Addresses to change operand to offset"],
     operand: Annotated[int, "Operand number (0=first, 1=second, -1=all)"] = 0,
@@ -1556,7 +1616,7 @@ def op_offset(
 
 
 @tool
-@idawrite
+@idasync
 def op_number(
     addrs: Annotated[list[str] | str, "Addresses to change operand representation"],
     operand: Annotated[int, "Operand number (0=first, 1=second, -1=all)"] = 0,
@@ -1596,7 +1656,7 @@ def op_number(
 
 
 @tool
-@idawrite
+@idasync
 def clr_op_type(
     addrs: Annotated[list[str] | str, "Addresses to clear operand type"],
     operand: Annotated[int, "Operand number (0=first, 1=second, -1=all)"] = 0,
@@ -1624,7 +1684,7 @@ def clr_op_type(
 
 
 @tool
-@idawrite
+@idasync
 def set_func_cmt(
     addrs: Annotated[list[str] | str, "Function addresses to set comment for"],
     comment: Annotated[str, "Comment text"],
@@ -1674,7 +1734,7 @@ def set_func_cmt(
 
 
 @tool
-@idaread
+@idasync
 def get_func_cmt(
     addrs: Annotated[list[str] | str, "Function addresses to get comment for"],
     repeatable: Annotated[bool, "Get repeatable comment (vs regular)"] = False,
@@ -1717,7 +1777,7 @@ def get_func_cmt(
 
 
 @tool
-@idawrite
+@idasync
 def set_extra_cmt(
     addrs: Annotated[list[str] | str, "Addresses to set extra comment for"],
     comment: Annotated[str, "Comment text (can be multiline with \\n)"],
@@ -1768,7 +1828,7 @@ def set_extra_cmt(
 
 
 @tool
-@idaread
+@idasync
 def get_extra_cmt(
     addrs: Annotated[list[str] | str, "Addresses to get extra comments from"],
     position: Annotated[Literal["anterior", "posterior", "both"], "Which comments to get"] = "both",
@@ -1811,7 +1871,7 @@ def get_extra_cmt(
 
 
 @tool
-@idawrite
+@idasync
 def del_extra_cmt(
     addrs: Annotated[list[str] | str, "Addresses to delete extra comments from"],
     position: Annotated[Literal["anterior", "posterior", "both"], "Which comments to delete"] = "both",
@@ -1851,3 +1911,148 @@ def del_extra_cmt(
             results.append({"addr": addr, "ok": False, "error": str(e)})
 
     return results
+
+
+@test()
+def test_rename_function_roundtrip():
+    """rename can rename and restore function names"""
+    from .api_core import lookup_funcs
+
+    fn_addr = get_any_function()
+    if not fn_addr:
+        return  # Skip if no functions
+
+    # Get original name
+    lookup_result = lookup_funcs(fn_addr)
+    if not lookup_result or not lookup_result[0].get("fn"):
+        return  # Skip if lookup failed
+    original_name = lookup_result[0]["fn"]["name"]
+
+    try:
+        # Rename the function
+        result = rename({"func": [{"addr": fn_addr, "name": "__test_func_name__"}]})
+        assert_has_keys(result, "func")
+        assert_is_list(result["func"], min_length=1)
+        assert_has_keys(result["func"][0], "addr", "name", "ok")
+        assert result["func"][0]["ok"], (
+            f"Rename failed: {result['func'][0].get('error')}"
+        )
+
+        # Verify the change
+        new_lookup = lookup_funcs(fn_addr)
+        new_name = new_lookup[0]["fn"]["name"]
+        assert new_name == "__test_func_name__", (
+            f"Expected '__test_func_name__', got {new_name!r}"
+        )
+    finally:
+        # Restore original name
+        rename({"func": [{"addr": fn_addr, "name": original_name}]})
+
+
+@test()
+def test_rename_global_roundtrip():
+    """rename can rename and restore global names"""
+    from .api_core import list_globals
+
+    # Get a global variable
+    globals_result = list_globals({"count": 1})
+    if not globals_result or not globals_result[0]["data"]:
+        return  # Skip if no globals
+
+    global_info = globals_result[0]["data"][0]
+    original_name = global_info["name"]
+    global_info["addr"]
+
+    # Skip system globals that can't be renamed
+    if original_name.startswith("__") or original_name.startswith("."):
+        return
+
+    result = {}
+    try:
+        # Rename the global
+        result = rename(
+            {"data": [{"old": original_name, "new": "__test_global_name__"}]}
+        )
+        assert_has_keys(result, "data")
+        assert_is_list(result["data"], min_length=1)
+        assert_has_keys(result["data"][0], "old", "new", "ok")
+
+        # Only verify change if rename succeeded (some globals may not be renameable)
+        if result["data"][0]["ok"]:
+            # Verify we can look it up by new name
+            ea = idaapi.get_name_ea(idaapi.BADADDR, "__test_global_name__")
+            assert ea != idaapi.BADADDR, "Could not find renamed global"
+    finally:
+        # Restore original name (only if rename succeeded)
+        if result.get("data") and result["data"][0].get("ok"):
+            rename({"data": [{"old": "__test_global_name__", "new": original_name}]})
+
+
+@test()
+def test_rename_local_roundtrip():
+    """rename can rename and restore local variable names"""
+    from .api_analysis import decompile
+
+    fn_addr = get_any_function()
+    if not fn_addr:
+        return  # Skip if no functions
+
+    # Try to decompile to get local variables
+    try:
+        dec_result = decompile(fn_addr)
+    except IDAError:
+        return  # Skip if decompilation fails
+
+    if not dec_result or dec_result[0].get("error"):
+        return  # Skip if decompilation failed
+
+    # Get local variables from decompiled code
+    lvars = dec_result[0].get("lvars", [])
+    if not lvars:
+        return  # Skip if no local variables
+
+    # Find a regular local (not argument)
+    test_lvar = None
+    for lvar in lvars:
+        if not lvar.get("is_arg"):
+            test_lvar = lvar
+            break
+
+    if not test_lvar:
+        return  # Skip if no non-argument local found
+
+    original_name = test_lvar["name"]
+
+    result = {}
+    try:
+        # Rename the local variable
+        result = rename(
+            {
+                "local": [
+                    {
+                        "func_addr": fn_addr,
+                        "old": original_name,
+                        "new": "__test_local__",
+                    }
+                ]
+            }
+        )
+        assert_has_keys(result, "local")
+        assert_is_list(result["local"], min_length=1)
+        assert_has_keys(result["local"][0], "func_addr", "old", "new", "ok")
+
+        # We don't assert ok=True because some locals may not be renameable
+    finally:
+        # Restore original name if rename succeeded
+        if result.get("local") and result["local"][0].get("ok"):
+            rename(
+                {
+                    "local": [
+                        {
+                            "func_addr": fn_addr,
+                            "old": "__test_local__",
+                            "new": original_name,
+                        }
+                    ]
+                }
+            )

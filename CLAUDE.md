@@ -69,7 +69,7 @@ git log --first-parent --no-merges 1.2.0..main "--pretty=- %s"
 
 **Infrastructure**:
 - `rpc.py`: JSON-RPC registry + type checking (`@tool`, `@resource`, `@unsafe` decorators)
-- `sync.py`: IDA thread synchronization (`@idaread`/`@idawrite` decorators)
+- `sync.py`: IDA thread synchronization (`@idasync` decorator)
 - `zeromcp/mcp.py`: HTTP/SSE server implementation (Streamable HTTP + SSE transports)
 - `utils.py`: TypedDict schemas, address parsing, pagination helpers
 
@@ -78,19 +78,15 @@ git log --first-parent --no-merges 1.2.0..main "--pretty=- %s"
 Every API function follows this pattern:
 ```python
 @tool             # 1. Register MCP tool
-@idaread          # 2. Execute on IDA's main thread (read-only)
+@idasync          # 2. Execute on IDA's main thread
 def my_api(param: Annotated[str, "description"]) -> ReturnType:
     """Docstring becomes MCP tool description"""
     # Implementation uses IDA SDK
 ```
 
-**IMPORTANT**: Use `@idawrite` instead of `@idaread` for functions that modify the IDB.
-
 ### Thread Safety
 
-**All IDA SDK calls MUST run on main thread** - enforced by `@idaread`/`@idawrite`:
-- `@idaread`: Use for read-only operations (queries, decompilation)
-- `@idawrite`: Use for modifications (comments, patches, renames)
+**All IDA SDK calls MUST run on main thread** - enforced by `@idasync`:
 - Implementation: `sync_wrapper()` uses `idaapi.execute_sync()` with queue-based result passing
 
 ### Type Annotations
@@ -114,12 +110,12 @@ count: Annotated[int, "Maximum number of results"]
 2. Import required IDA SDK modules and decorators:
    ```python
    from .rpc import tool
-   from .sync import idaread  # or idawrite
+   from .sync import idasync
    ```
 3. Define function with full type hints:
    ```python
    @tool
-   @idaread
+   @idasync
    def my_function(param: Annotated[str, "param description"]) -> dict:
        """Tool description (first line used in MCP schema)"""
        # Use IDA SDK here
@@ -135,7 +131,7 @@ Mark debugger operations or destructive actions as unsafe:
 ```python
 @unsafe           # Requires --unsafe flag
 @tool
-@idawrite
+@idasync
 def dangerous_op():
     pass
 ```
@@ -145,14 +141,14 @@ def dangerous_op():
 Expose RESTful URI-based access to IDA data using `@resource`:
 ```python
 @resource(uri="ida://functions/{pattern}")
-@idaread
+@idasync
 def functions_resource(pattern: str = "*") -> list[dict]:
     """Get functions matching pattern via ida://functions/pattern URI"""
     # Return data accessible via MCP resource protocol
     return filtered_functions
 ```
 
-Resources provide read-only access to IDA data via URI patterns. All resources use `@idaread`.
+Resources provide read-only access to IDA data via URI patterns. All resources use `@idasync`.
 
 ## Common Patterns
 
@@ -178,7 +174,7 @@ return results
 from .utils import paginate, Page
 
 @tool
-@idaread
+@idasync
 def list_items(queries: Annotated[str, "offset:count or pattern"]) -> Page:
     all_items = get_all_items()
     return paginate(all_items, queries)
@@ -191,7 +187,100 @@ from .utils import pattern_filter
 filtered = pattern_filter(items, "name", pattern)  # Glob-style matching
 ```
 
-## Testing Workflow
+## Testing
+
+### Test Framework Overview
+
+The project uses a custom test framework with tests defined inline in `api_*.py` files using the `@test` decorator. Tests are placed immediately after the function they test.
+
+**Key files**:
+- `ida_mcp/tests.py`: Test framework (decorator, runner, helpers)
+- `test.py`: Standalone idalib-based test runner
+- `devdocs/test-framework.md`: Detailed documentation
+
+### Running Tests
+
+```bash
+# Run all tests on a binary
+uv run ida-mcp-test tests/crackme03.elf
+
+# Run specific category
+uv run ida-mcp-test tests/crackme03.elf --category api_core
+
+# Run tests matching pattern
+uv run ida-mcp-test tests/crackme03.elf --pattern "*decompile*"
+
+# List available tests
+uv run ida-mcp-test tests/crackme03.elf --list
+
+# Stop on first failure
+uv run ida-mcp-test tests/crackme03.elf --stop-on-failure
+```
+
+### Running Tests from IDA Console
+
+```python
+from ida_mcp.tests import run_tests
+run_tests()                      # Run all tests
+run_tests(category="api_core")   # Run specific category
+run_tests(pattern="*meta*")      # Run tests matching pattern
+```
+
+### Code Coverage
+
+```bash
+# Run tests with coverage
+uv run coverage run -m ida_pro_mcp.test crackme03.elf
+
+# Show coverage report
+uv run coverage report --show-missing
+
+# Generate HTML report
+uv run coverage html
+open htmlcov/index.html
+```
+
+### Writing Tests
+
+Tests are placed immediately after the function they test:
+
+```python
+from .tests import test, assert_has_keys, assert_valid_address
+
+@tool
+@idasync
+def my_function(...):
+    ...
+
+
+@test()
+def test_my_function():
+    """Description of what the test verifies"""
+    result = my_function(...)
+    assert_has_keys(result, "key1", "key2")
+    assert_valid_address(result["addr"])
+```
+
+**Available assertion helpers**: `assert_has_keys`, `assert_valid_address`, `assert_non_empty`, `assert_is_list`, `assert_all_have_keys`
+
+**Test data helpers**: `get_any_function()`, `get_any_string()`, `get_first_segment()`
+
+**Error handling**: Tools raise `IDAError` - catch and assert on these:
+```python
+from .sync import IDAError
+
+@test()
+def test_invalid_input():
+    try:
+        my_function("invalid")
+        assert False, "Expected IDAError"
+    except IDAError:
+        pass  # Expected
+```
+
+See `devdocs/test-framework.md` for complete documentation.
+
+## Manual Testing Workflow
 
 1. **Install plugin symlink**: `uv run ida-pro-mcp --install` (one-time)
 2. **Load binary in IDA**: Plugin appears under Edit → Plugins → MCP (Ctrl+Alt+M)
@@ -265,6 +354,6 @@ src/ida_pro_mcp/
 
 - **Server**: Python >=3.11 (uses vendored zeromcp MCP implementation)
 - **Plugin**: Python >=3.11
-- **IDA Pro**: 8.3+ (9.0 recommended), **IDA Free not supported** (no plugin API)
+- **IDA Pro**: 9.1+, **IDA Free not supported** (no plugin API)
 
 Use `idapyswitch` to upgrade IDA's Python interpreter if needed.
