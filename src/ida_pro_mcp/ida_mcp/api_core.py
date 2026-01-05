@@ -1,5 +1,6 @@
 """Core API Functions - IDB metadata and basic queries"""
 
+import time
 from typing import Annotated, Optional
 
 import ida_hexrays
@@ -79,6 +80,14 @@ def _get_cached_strings() -> list[String]:
         _strings_cache_md5 = current_md5
 
     return _strings_cache
+
+
+def init_caches():
+    """Build caches on plugin startup (called from Ctrl+M)."""
+    t0 = time.perf_counter()
+    strings = _get_cached_strings()
+    t1 = time.perf_counter()
+    print(f"[MCP] Cached {len(strings)} strings in {(t1-t0)*1000:.0f}ms")
 
 
 # ============================================================================

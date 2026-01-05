@@ -18,7 +18,7 @@ import ida_problems
 import ida_tryblks
 import ida_fixup
 from .rpc import tool
-from .sync import idasync, is_window_active, IDAError
+from .sync import idasync, is_window_active, IDAError, tool_timeout
 from .tests import (
     test,
     assert_has_keys,
@@ -103,6 +103,7 @@ def _get_cached_strings_dict() -> list[dict]:
 
 @tool
 @idasync
+@tool_timeout(90.0)
 def decompile(
     addrs: Annotated[list[str] | str, "Function addresses to decompile"],
 ) -> list[dict]:
@@ -177,6 +178,7 @@ def test_decompile_batch():
 
 @tool
 @idasync
+@tool_timeout(90.0)
 def disasm(
     addrs: Annotated[list[str] | str, "Function addresses to disassemble"],
     max_instructions: Annotated[

@@ -23,11 +23,14 @@ src/ida_pro_mcp/
 │   │   ├── TestResults       # Result aggregation
 │   │   ├── assert_*          # Assertion helpers
 │   │   └── get_any_*         # Test data helpers
-│   ├── api_core.py           # Functions + tests
-│   ├── api_analysis.py       # Functions + tests
+│   ├── api_core.py           # Functions + inline tests
+│   ├── api_analysis.py       # Functions + inline tests
 │   └── ...
 ├── test.py                   # Standalone runner (idalib)
 └── ...
+tests/
+├── crackme03.elf             # Test binary
+└── binary_info.py            # Binary info extraction (optional)
 ```
 
 ## Test Registration

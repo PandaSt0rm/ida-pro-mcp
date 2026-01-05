@@ -1,38 +1,77 @@
 import json
-import time
 import inspect
+import os
+import threading
+import time
 import traceback
-import logging
-from typing import Any, Callable, Literal, get_type_hints, get_origin, get_args, Union, TypedDict, TypeAlias, NotRequired, is_typeddict
+from typing import Any, Callable, get_type_hints, get_origin, get_args, Union, TypedDict, TypeAlias, NotRequired, is_typeddict
 from types import UnionType
 
-logger = logging.getLogger("ida_mcp.rpc")
-
 JsonRpcId: TypeAlias = str | int | float | None
+
+# Thread-local storage for current request context (ID + cancel event)
+_current_request = threading.local()
+
+# Global pending requests for cancellation
+_pending_requests_lock = threading.Lock()
+_pending_requests: dict[int | str, threading.Event] = {}
+
+
+def get_current_request_id() -> JsonRpcId:
+    """Get the JSON-RPC request ID of the currently executing request."""
+    return getattr(_current_request, "id", None)
+
+
+def get_current_cancel_event() -> threading.Event | None:
+    """Get the cancel event for the currently executing request."""
+    return getattr(_current_request, "cancel_event", None)
+
+
+def register_pending_request(request_id: int | str) -> threading.Event:
+    """Register a request as pending and return its cancel event."""
+    event = threading.Event()
+    with _pending_requests_lock:
+        _pending_requests[request_id] = event
+    _current_request.cancel_event = event
+    return event
+
+
+def unregister_pending_request(request_id: int | str) -> None:
+    """Unregister a pending request."""
+    with _pending_requests_lock:
+        _pending_requests.pop(request_id, None)
+    _current_request.cancel_event = None
+
+
+def cancel_request(request_id: int | str) -> bool:
+    """Signal cancellation for a pending request. Returns True if request was found."""
+    with _pending_requests_lock:
+        event = _pending_requests.get(request_id)
+        if event:
+            event.set()
+            return True
+    return False
+
+
+def _parse_bool_env(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    value = value.strip().lower()
+    if value in ("1", "true", "yes", "on"):
+        return True
+    if value in ("0", "false", "no", "off"):
+        return False
+    return default
+
+
+_LOG_REQUESTS = _parse_bool_env("IDA_MCP_LOG_REQUESTS", True)
+_LOG_SKIP_METHODS = {
+    m.strip()
+    for m in os.getenv("IDA_MCP_LOG_SKIP_METHODS", "tools/call").split(",")
+    if m.strip()
+}
 JsonRpcParams: TypeAlias = dict[str, Any] | list[Any] | None
-
-
-def _format_type_name(t: Any) -> str:
-    """Format a type for display in error messages"""
-    from typing import Annotated
-    origin = get_origin(t)
-    # Unwrap Annotated types
-    if origin is Annotated:
-        return _format_type_name(get_args(t)[0])
-    if origin is list:
-        inner = get_args(t)
-        if inner:
-            return f"list[{_format_type_name(inner[0])}]"
-        return "list"
-    if is_typeddict(t):
-        # Show TypedDict name and its fields
-        hints = {k: v for k, v in getattr(t, '__annotations__', {}).items()}
-        fields = ", ".join(f"{k}: {_format_type_name(v)}" for k, v in hints.items())
-        return f"{t.__name__}{{{fields}}}"
-    if hasattr(t, '__name__'):
-        return t.__name__
-    return str(t)
-
 
 class JsonRpcRequest(TypedDict):
     jsonrpc: str
@@ -58,18 +97,9 @@ class JsonRpcException(Exception):
         self.data = data
 
 
-def _summarize_params(params: JsonRpcParams, max_len: int = 100) -> str:
-    """Create a brief summary of params for logging."""
-    if params is None:
-        return ""
-    try:
-        s = json.dumps(params, default=str)
-        if len(s) > max_len:
-            return s[:max_len] + "..."
-        return s
-    except Exception:
-        return "<unprintable>"
-
+class RequestCancelledError(Exception):
+    """Base class for request cancellation errors (LSP error code -32800)."""
+    pass
 
 class JsonRpcRegistry:
     def __init__(self):
@@ -88,7 +118,6 @@ class JsonRpcRegistry:
             if not isinstance(request, dict):
                 return self._error(None, -32600, "Invalid request: must be a JSON object")
         except Exception as e:
-            logger.error(f"JSON parse error: {e}")
             return self._error(None, -32700, "JSON parse error", str(e))
 
         if request.get("jsonrpc") != "2.0":
@@ -104,15 +133,24 @@ class JsonRpcRegistry:
         is_notification = "id" not in request
         params: JsonRpcParams = request.get("params")
 
-        # Log the request
-        params_summary = _summarize_params(params)
-        logger.info(f">>> {method}({params_summary}) [id={request_id}]")
-        start_time = time.time()
+        log_method = _LOG_REQUESTS and method not in _LOG_SKIP_METHODS
+        if log_method:
+            params_str = json.dumps(params, default=str)
+            if len(params_str) > 200:
+                params_str = params_str[:200] + "..."
+            print(f"[MCP] >> {method}({params_str})")
 
+        # Set current request ID in thread-local for cancellation tracking
+        _current_request.id = request_id
+        start_time = time.perf_counter()
         try:
             result = self._call(method, params)
-            elapsed = time.time() - start_time
-            logger.info(f"<<< {method} completed in {elapsed:.3f}s [id={request_id}]")
+            elapsed_ms = (time.perf_counter() - start_time) * 1000
+            if log_method:
+                result_str = json.dumps(result, default=str)
+                if len(result_str) > 200:
+                    result_str = result_str[:200] + "..."
+                print(f"[MCP] << {method} ({elapsed_ms:.1f}ms) {result_str}")
             if is_notification:
                 return None
             return {
@@ -121,19 +159,30 @@ class JsonRpcRegistry:
                 "id": request_id,
             }
         except JsonRpcException as e:
-            elapsed = time.time() - start_time
-            logger.warning(f"<<< {method} failed ({elapsed:.3f}s): [{e.code}] {e.message} [id={request_id}]")
+            elapsed_ms = (time.perf_counter() - start_time) * 1000
+            if log_method:
+                print(f"[MCP] << {method} ({elapsed_ms:.1f}ms) ERROR: {e.message}")
             if is_notification:
                 return None
             return self._error(request_id, e.code, e.message, e.data)
+        except RequestCancelledError as e:
+            # LSP error code -32800: Request cancelled
+            elapsed_ms = (time.perf_counter() - start_time) * 1000
+            if log_method:
+                print(f"[MCP] << {method} ({elapsed_ms:.1f}ms) CANCELLED")
+            if is_notification:
+                return None
+            return self._error(request_id, -32800, str(e) or "Request cancelled")
         except Exception as e:
-            elapsed = time.time() - start_time
-            logger.error(f"<<< {method} exception ({elapsed:.3f}s): {type(e).__name__}: {e} [id={request_id}]")
-            logger.debug(f"Traceback:\n{traceback.format_exc()}")
+            elapsed_ms = (time.perf_counter() - start_time) * 1000
+            if log_method:
+                print(f"[MCP] << {method} ({elapsed_ms:.1f}ms) EXCEPTION: {e}")
             if is_notification:
                 return None
             error = self.map_exception(e)
             return self._error(request_id, error["code"], error["message"], error.get("data"))
+        finally:
+            _current_request.id = None
 
     def map_exception(self, e: Exception) -> JsonRpcError:
         if self.redact_exceptions:
@@ -240,37 +289,16 @@ class JsonRpcRegistry:
                         arg_origin = get_origin(arg_type)
                         check_type = arg_origin if arg_origin is not None else arg_type
 
-                        # TypedDict: check it's a dict AND has required fields
+                        # TypedDict cannot be used with isinstance - check for dict instead
                         if is_typeddict(arg_type):
-                            if isinstance(value, dict):
-                                required_keys = getattr(arg_type, '__required_keys__', set())
-                                if required_keys <= set(value.keys()):
-                                    type_matched = True
-                                    break
-                            continue
+                            check_type = dict
 
                         if isinstance(value, check_type):
                             type_matched = True
                             break
 
                     if not type_matched:
-                        expected_types = [_format_type_name(t) for t in args if t is not type(None)]
-                        hint = ""
-                        # Detect likely double-encoded JSON
-                        if isinstance(value, str) and value.strip().startswith(('[', '{')):
-                            hint = " (value looks like JSON string - don't stringify objects, pass them directly)"
-                        raise JsonRpcException(-32602, f"Invalid params: {param_name} expected {' | '.join(expected_types)}, got {type(value).__name__}{hint}")
-                    validated_params[param_name] = value
-                    continue
-
-                # Handle Literal types
-                if origin is Literal:
-                    allowed_values = args
-                    if value not in allowed_values:
-                        raise JsonRpcException(
-                            -32602,
-                            f"Invalid params: {param_name} must be one of {', '.join(repr(v) for v in allowed_values)}, got {value!r}"
-                        )
+                        raise JsonRpcException(-32602, f"Invalid params: {param_name} union does not contain {type(value).__name__}")
                     validated_params[param_name] = value
                     continue
 
@@ -287,20 +315,9 @@ class JsonRpcRegistry:
                 # Handle TypedDict (must check before basic types)
                 if is_typeddict(expected_type):
                     if not isinstance(value, dict):
-                        hint = ""
-                        if isinstance(value, str) and value.strip().startswith(('[', '{')):
-                            hint = " (value looks like JSON string - don't stringify objects, pass them directly)"
                         raise JsonRpcException(
                             -32602,
-                            f"Invalid params: {param_name} expected {_format_type_name(expected_type)}, got {type(value).__name__}{hint}"
-                        )
-                    # Check required fields
-                    required_keys = getattr(expected_type, '__required_keys__', set())
-                    missing = required_keys - set(value.keys())
-                    if missing:
-                        raise JsonRpcException(
-                            -32602,
-                            f"Invalid params: {param_name} missing required fields: {', '.join(sorted(missing))}. Expected {_format_type_name(expected_type)}"
+                            f"Invalid params: {param_name} expected dict, got {type(value).__name__}"
                         )
                     validated_params[param_name] = value
                     continue
