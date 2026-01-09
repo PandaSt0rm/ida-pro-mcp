@@ -81,8 +81,10 @@ class IDASessionManager:
             for sid, session in self._sessions.items():
                 if session.input_path.resolve() == input_path.resolve():
                     logger.info(f"Binary already open in session: {sid}")
-                    self._current_session_id = sid
-                    session.last_accessed = datetime.now()
+                    if self._current_session_id != sid:
+                        self.switch_session(sid)
+                    else:
+                        session.last_accessed = datetime.now()
                     return sid
 
             # Close current database if any (Do we need to close the database first?)
