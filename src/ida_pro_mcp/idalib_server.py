@@ -1,19 +1,23 @@
+"""MCP server for IDA Pro via idalib.
+
+Includes IDALib-specific MCP tools for managing multiple binary sessions.
+"""
+
 import sys
 import signal
 import logging
 import argparse
 from pathlib import Path
+from typing import Annotated, Optional
 
 # idapro must go first to initialize idalib
 import idapro
 import ida_auto
 
 from ida_pro_mcp.ida_mcp import MCP_SERVER
-"""IDALib-specific MCP tools for managing multiple binary sessions
-"""
-from typing import Annotated, Optional
 from ida_pro_mcp.ida_mcp.rpc import tool
 from ida_pro_mcp.idalib_session_manager import get_session_manager
+
 
 @tool
 def idalib_open(
@@ -318,7 +322,6 @@ def main():
     logging.getLogger().setLevel(log_level)
 
     # Initialize session manager for dynamic binary loading
-    from ida_pro_mcp.idalib_session_manager import get_session_manager
     session_manager = get_session_manager()
 
     # Open initial binary if provided
