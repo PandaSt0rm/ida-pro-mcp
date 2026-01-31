@@ -180,10 +180,12 @@ def test_xrefs_to_field_nonexistent_struct():
 @test()
 def test_xrefs_to_field_batch():
     """xrefs_to_field handles batch queries"""
-    result = xrefs_to_field([
-        {"struct": "Struct1", "field": "field1"},
-        {"struct": "Struct2", "field": "field2"},
-    ])
+    result = xrefs_to_field(
+        [
+            {"struct": "Struct1", "field": "field1"},
+            {"struct": "Struct2", "field": "field2"},
+        ]
+    )
     assert_is_list(result, min_length=2)
 
 

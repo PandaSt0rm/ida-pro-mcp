@@ -36,6 +36,7 @@ from ..sync import IDAError
 # Test Helpers
 # ============================================================================
 
+
 def create_test_struct(name: str = "__TestStruct__") -> bool:
     """Helper to create a test struct in IDA's type library.
 
@@ -145,6 +146,7 @@ def test_read_struct_name_resolution():
 
     # Get the function name
     from ..api_core import lookup_funcs
+
     fn_info = lookup_funcs(fn_addr)
     if not fn_info or not fn_info[0].get("fn"):
         return
@@ -165,7 +167,9 @@ def test_read_struct_name_resolution():
 @test()
 def test_read_struct_invalid_address():
     """read_struct handles invalid address gracefully"""
-    result = read_struct({"addr": "InvalidAddressName123", "struct": "NonExistentStruct"})
+    result = read_struct(
+        {"addr": "InvalidAddressName123", "struct": "NonExistentStruct"}
+    )
     assert_is_list(result, min_length=1)
     r = result[0]
     # Should have error about failed address resolution

@@ -37,7 +37,7 @@ def init_caches():
     t0 = time.perf_counter()
     strings = _get_strings_cache()
     t1 = time.perf_counter()
-    print(f"[MCP] Cached {len(strings)} strings in {(t1-t0)*1000:.0f}ms")
+    print(f"[MCP] Cached {len(strings)} strings in {(t1 - t0) * 1000:.0f}ms")
 
 
 from .utils import (
@@ -326,4 +326,3 @@ def find_regex(
         "matches": matches,
         "cursor": {"next": offset + limit} if more else {"done": True},
     }
-

@@ -128,11 +128,7 @@ def test_rename_local_roundtrip():
         return
 
     # This requires the function to be decompilable and have local variables
-    result = rename({
-        "local": [{
-            "func": fn_addr,
-            "name": "old_var",
-            "new_name": "__test_local__"
-        }]
-    })
+    result = rename(
+        {"local": [{"func": fn_addr, "name": "old_var", "new_name": "__test_local__"}]}
+    )
     assert isinstance(result, dict)

@@ -75,20 +75,14 @@ def test_declare_delete_stack():
         return
 
     # Try to declare a stack variable
-    result = declare_stack({
-        "func": fn_addr,
-        "name": "__test_var__",
-        "offset": -8,
-        "type": "int"
-    })
+    result = declare_stack(
+        {"func": fn_addr, "name": "__test_var__", "offset": -8, "type": "int"}
+    )
     assert_is_list(result, min_length=1)
     r = result[0]
     assert_has_keys(r, "func", "error")
 
     # If declare succeeded, try to delete
     if r.get("error") is None:
-        del_result = delete_stack({
-            "func": fn_addr,
-            "name": "__test_var__"
-        })
+        del_result = delete_stack({"func": fn_addr, "name": "__test_var__"})
         assert_is_list(del_result, min_length=1)
