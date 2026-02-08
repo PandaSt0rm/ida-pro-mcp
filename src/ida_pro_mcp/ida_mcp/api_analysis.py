@@ -41,20 +41,30 @@ from .utils import (
 _IMM_SCAN_BACK_MAX = 15
 
 
-def _raw_bin_search(ea: int, max_ea: int, data: bytes, mask: bytes, flags: int = 0) -> int:
+def _raw_bin_search(
+    ea: int, max_ea: int, data: bytes, mask: bytes, flags: int = 0
+) -> int:
     """Search for raw bytes with mask, compatible across IDA versions.
 
     Returns the match address, or idaapi.BADADDR if not found.
     """
-    if hasattr(ida_bytes, 'find_bytes'):
+    if hasattr(ida_bytes, "find_bytes"):
         # IDA 9.0+: high-level API accepting bytes + mask directly
-        search_flags = flags or (ida_bytes.BIN_SEARCH_FORWARD | ida_bytes.BIN_SEARCH_NOSHOW)
-        return ida_bytes.find_bytes(data, ea, range_end=max_ea, mask=mask, flags=search_flags)
-    if hasattr(ida_bytes, 'bin_search'):
+        search_flags = flags or (
+            ida_bytes.BIN_SEARCH_FORWARD | ida_bytes.BIN_SEARCH_NOSHOW
+        )
+        return ida_bytes.find_bytes(
+            data, ea, range_end=max_ea, mask=mask, flags=search_flags
+        )
+    if hasattr(ida_bytes, "bin_search"):
         # Older IDA: low-level 6-param API
-        search_flags = flags or (ida_bytes.BIN_SEARCH_FORWARD | ida_bytes.BIN_SEARCH_NOSHOW)
+        search_flags = flags or (
+            ida_bytes.BIN_SEARCH_FORWARD | ida_bytes.BIN_SEARCH_NOSHOW
+        )
         return ida_bytes.bin_search(ea, max_ea, data, mask, len(data), search_flags)
-    raise RuntimeError("No binary search API available (tried ida_bytes.find_bytes, ida_bytes.bin_search)")
+    raise RuntimeError(
+        "No binary search API available (tried ida_bytes.find_bytes, ida_bytes.bin_search)"
+    )
 
 
 def _decode_insn_at(ea: int) -> ida_ua.insn_t | None:
@@ -161,6 +171,7 @@ def _resolve_immediate_insn_start(
                 return start
     return None
 
+
 # ============================================================================
 # Code Analysis & Decompilation
 # ============================================================================
@@ -203,7 +214,6 @@ def disasm(
         max_instructions = 50000
     if offset < 0:
         offset = 0
-
 
     try:
         start = parse_address(addr)
@@ -313,11 +323,7 @@ def disasm(
             "asm": out,
             "instruction_count": len(lines),
             "total_instructions": total_count if include_total else None,
-            "cursor": (
-                {"next": offset + max_instructions}
-                if more
-                else {"done": True}
-            ),
+            "cursor": ({"next": offset + max_instructions} if more else {"done": True}),
         }
     except Exception as e:
         return {
@@ -525,11 +531,13 @@ def callees(
                     break
                 current_ea = next_ea
 
-            results.append({
-                "addr": fn_addr,
-                "callees": list(callees_dict.values()),
-                "more": more,
-            })
+            results.append(
+                {
+                    "addr": fn_addr,
+                    "callees": list(callees_dict.values()),
+                    "more": more,
+                }
+            )
         except Exception as e:
             results.append({"addr": fn_addr, "callees": None, "error": str(e)})
 
@@ -558,8 +566,8 @@ def find_bytes(
         limit = 10000
 
     # Build a reusable search closure based on available IDA API
-    _use_find_bytes = hasattr(ida_bytes, 'find_bytes')
-    _use_bin_search = hasattr(ida_bytes, 'bin_search')
+    _use_find_bytes = hasattr(ida_bytes, "find_bytes")
+    _use_bin_search = hasattr(ida_bytes, "bin_search")
 
     def _make_searcher(pattern: str):
         """Return a (searcher_fn, error_str|None) for the given pattern.
@@ -573,9 +581,7 @@ def find_bytes(
         if _use_find_bytes:
             # IDA 9.0+ high-level API: accepts pattern string directly.
             # Normalize "??" to "?" (IDA uses single ? per wildcard byte).
-            normalized = " ".join(
-                "?" if t in ("??", "?") else t for t in tokens
-            )
+            normalized = " ".join("?" if t in ("??", "?") else t for t in tokens)
 
             def _search(ea, max_ea):
                 return ida_bytes.find_bytes(normalized, ea, range_end=max_ea)
@@ -602,7 +608,10 @@ def find_bytes(
 
             return _search, None
 
-        return None, "No binary search API available (tried ida_bytes.find_bytes, ida_bytes.bin_search)"
+        return (
+            None,
+            "No binary search API available (tried ida_bytes.find_bytes, ida_bytes.bin_search)",
+        )
 
     results = []
     for pattern in patterns:
@@ -794,7 +803,7 @@ def find(
             try:
                 ea = ida_ida.inf_get_min_ea()
                 max_ea = ida_ida.inf_get_max_ea()
-                mask = b"\xFF" * len(pattern_bytes)
+                mask = b"\xff" * len(pattern_bytes)
                 while ea != idaapi.BADADDR:
                     ea = _raw_bin_search(ea, max_ea, pattern_bytes, mask)
                     if ea != idaapi.BADADDR:
@@ -857,7 +866,7 @@ def find(
                         ea = seg.start_ea
                         while ea != idaapi.BADADDR and ea < seg.end_ea:
                             ea = _raw_bin_search(
-                                ea, seg.end_ea, pattern_bytes, b"\xFF" * size
+                                ea, seg.end_ea, pattern_bytes, b"\xff" * size
                             )
                             if ea == idaapi.BADADDR:
                                 break
@@ -976,7 +985,9 @@ def find(
     return results
 
 
-def _resolve_insn_scan_ranges(pattern: dict, allow_broad: bool) -> tuple[list[tuple[int, int]], str | None]:
+def _resolve_insn_scan_ranges(
+    pattern: dict, allow_broad: bool
+) -> tuple[list[tuple[int, int]], str | None]:
     func_addr = pattern.get("func")
     segment_name = pattern.get("segment")
     start_s = pattern.get("start")
@@ -1202,8 +1213,12 @@ def callgraph(
         list[str] | str, "Root function addresses to start call graph traversal from"
     ],
     max_depth: Annotated[int, "Maximum depth for call graph traversal"] = 5,
-    max_nodes: Annotated[int, "Max nodes across the graph (default: 1000, max: 100000)"] = 1000,
-    max_edges: Annotated[int, "Max edges across the graph (default: 5000, max: 200000)"] = 5000,
+    max_nodes: Annotated[
+        int, "Max nodes across the graph (default: 1000, max: 100000)"
+    ] = 1000,
+    max_edges: Annotated[
+        int, "Max edges across the graph (default: 5000, max: 200000)"
+    ] = 5000,
     max_edges_per_func: Annotated[
         int, "Max edges per function (default: 200, max: 5000)"
     ] = 200,
