@@ -317,3 +317,56 @@ def find_regex(
         "matches": matches,
         "cursor": {"next": offset + limit} if more else {"done": True},
     }
+
+
+# ============================================================================
+# Exports
+# ============================================================================
+
+
+@tool
+@idasync
+def exports(
+    queries: Annotated[
+        list[ListQuery] | ListQuery | str,
+        "List exports with optional filtering and pagination. Format: {filter: 'pattern', offset: 0, count: 50}",
+    ] = "",
+) -> list[Page]:
+    """List exported functions/symbols."""
+    queries = normalize_dict_list(
+        queries, lambda s: {"offset": 0, "count": 50, "filter": s}
+    )
+    results = []
+
+    all_exports = []
+    for i, entry in enumerate(idautils.Entries()):
+        # IDA 9+: (index, ordinal, ea, name, [module], [ord])
+        if len(entry) >= 4:
+            _, ordinal, ea, name = entry[:4]
+        else:  # pragma: no cover
+            ea = entry[0]
+            name = entry[1] if len(entry) > 1 else None
+            ordinal = entry[2] if len(entry) > 2 else i
+
+        all_exports.append(
+            {
+                "addr": hex(ea),
+                "name": name if name else f"<Ordinal_{ordinal}>",
+                "ordinal": ordinal,
+                "index": i,
+            }
+        )
+
+    for query in queries:
+        offset = query.get("offset", 0)
+        count = query.get("count", 50)
+        filter_pattern = query.get("filter", "")
+
+        if filter_pattern:
+            filtered = pattern_filter(all_exports, filter_pattern, "name")
+        else:
+            filtered = all_exports
+
+        results.append(paginate(filtered, offset, count))
+
+    return results

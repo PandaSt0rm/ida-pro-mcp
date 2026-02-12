@@ -5,10 +5,11 @@ granularities (bytes, integers, strings) and patching binary data.
 """
 
 import re
-
 from typing import Annotated
+
 import ida_bytes
 import idaapi
+import ida_ida
 
 from .rpc import tool
 from .sync import idasync
@@ -223,6 +224,79 @@ def get_global_value(
 
 
 # ============================================================================
+# Fixed-width Integer Reads
+# ============================================================================
+
+
+@tool
+@idasync
+def get_u8(
+    addrs: Annotated[list[str] | str, "Addresses to read 8-bit unsigned integers from"],
+) -> list[dict]:
+    """Read 8-bit unsigned integers."""
+    addrs = normalize_list_input(addrs)
+    results = []
+    for addr in addrs:
+        try:
+            ea = parse_address(addr)
+            results.append({"addr": addr, "value": ida_bytes.get_wide_byte(ea)})
+        except Exception as e:
+            results.append({"addr": addr, "value": None, "error": str(e)})
+    return results
+
+
+@tool
+@idasync
+def get_u16(
+    addrs: Annotated[list[str] | str, "Addresses to read 16-bit unsigned integers from"],
+) -> list[dict]:
+    """Read 16-bit unsigned integers."""
+    addrs = normalize_list_input(addrs)
+    results = []
+    for addr in addrs:
+        try:
+            ea = parse_address(addr)
+            results.append({"addr": addr, "value": ida_bytes.get_wide_word(ea)})
+        except Exception as e:
+            results.append({"addr": addr, "value": None, "error": str(e)})
+    return results
+
+
+@tool
+@idasync
+def get_u32(
+    addrs: Annotated[list[str] | str, "Addresses to read 32-bit unsigned integers from"],
+) -> list[dict]:
+    """Read 32-bit unsigned integers."""
+    addrs = normalize_list_input(addrs)
+    results = []
+    for addr in addrs:
+        try:
+            ea = parse_address(addr)
+            results.append({"addr": addr, "value": ida_bytes.get_wide_dword(ea)})
+        except Exception as e:
+            results.append({"addr": addr, "value": None, "error": str(e)})
+    return results
+
+
+@tool
+@idasync
+def get_u64(
+    addrs: Annotated[list[str] | str, "Addresses to read 64-bit unsigned integers from"],
+) -> list[dict]:
+    """Read 64-bit unsigned integers."""
+    addrs = normalize_list_input(addrs)
+    results = []
+    for addr in addrs:
+        try:
+            ea = parse_address(addr)
+            results.append({"addr": addr, "value": ida_bytes.get_qword(ea)})
+        except Exception as e:
+            results.append({"addr": addr, "value": None, "error": str(e)})
+    return results
+
+
+# ============================================================================
 # Batch Data Operations
 # ============================================================================
 
@@ -302,3 +376,204 @@ def put_int(
             )
 
     return results
+
+
+# ============================================================================
+# Original Bytes Utilities
+# ============================================================================
+
+
+@tool
+@idasync
+def get_original_bytes(
+    regions: Annotated[
+        list[MemoryRead] | MemoryRead,
+        "Memory regions to read original bytes from",
+    ],
+) -> list[dict]:
+    """Read original bytes before patches for addresses."""
+    if isinstance(regions, dict):
+        regions = [regions]
+    if not hasattr(ida_bytes, "get_original_byte"):
+        return [
+            {
+                "addr": item.get("addr", ""),
+                "data": None,
+                "error": "Original-byte API unavailable in this IDA version",
+            }
+            for item in regions
+        ]
+
+    results = []
+    for item in regions:
+        addr = item.get("addr", "")
+        size = item.get("size", 0)
+        try:
+            ea = parse_address(addr)
+            if size < 0:
+                raise ValueError("size must be >= 0")
+
+            original = []
+            for i in range(size):
+                original.append(ida_bytes.get_original_byte(ea + i))
+            data = " ".join(f"{x:#02x}" for x in original)
+            results.append({"addr": addr, "data": data})
+        except Exception as e:
+            results.append({"addr": addr, "data": None, "error": str(e)})
+
+    return results
+
+
+@tool
+@idasync
+def get_original_byte(
+    addrs: Annotated[list[str] | str, "Addresses to read original bytes from"],
+) -> list[dict]:
+    """Read single original bytes."""
+    addrs = normalize_list_input(addrs)
+    if not hasattr(ida_bytes, "get_original_byte"):
+        return [
+            {"addr": addr, "value": None, "error": "Original-byte API unavailable in this IDA version"}
+            for addr in addrs
+        ]
+    results = []
+    for addr in addrs:
+        try:
+            ea = parse_address(addr)
+            value = ida_bytes.get_original_byte(ea)
+            results.append({"addr": addr, "value": value})
+        except Exception as e:
+            results.append({"addr": addr, "value": None, "error": str(e)})
+    return results
+
+
+@tool
+@idasync
+def get_original_word(
+    addrs: Annotated[list[str] | str, "Addresses to read original 16-bit words from"],
+) -> list[dict]:
+    """Read original 16-bit values."""
+    addrs = normalize_list_input(addrs)
+    if not hasattr(ida_bytes, "get_original_word"):
+        return [
+            {"addr": addr, "value": None, "error": "Original-word API unavailable in this IDA version"}
+            for addr in addrs
+        ]
+    results = []
+    for addr in addrs:
+        try:
+            ea = parse_address(addr)
+            results.append({"addr": addr, "value": ida_bytes.get_original_word(ea)})
+        except Exception as e:
+            results.append({"addr": addr, "value": None, "error": str(e)})
+    return results
+
+
+@tool
+@idasync
+def get_original_dword(
+    addrs: Annotated[list[str] | str, "Addresses to read original 32-bit words from"],
+) -> list[dict]:
+    """Read original 32-bit values."""
+    addrs = normalize_list_input(addrs)
+    if not hasattr(ida_bytes, "get_original_dword"):
+        return [
+            {"addr": addr, "value": None, "error": "Original-dword API unavailable in this IDA version"}
+            for addr in addrs
+        ]
+    results = []
+    for addr in addrs:
+        try:
+            ea = parse_address(addr)
+            results.append({"addr": addr, "value": ida_bytes.get_original_dword(ea)})
+        except Exception as e:
+            results.append({"addr": addr, "value": None, "error": str(e)})
+    return results
+
+
+@tool
+@idasync
+def get_original_qword(
+    addrs: Annotated[list[str] | str, "Addresses to read original 64-bit words from"],
+) -> list[dict]:
+    """Read original 64-bit values."""
+    addrs = normalize_list_input(addrs)
+    if not hasattr(ida_bytes, "get_original_qword"):
+        return [
+            {"addr": addr, "value": None, "error": "Original-qword API unavailable in this IDA version"}
+            for addr in addrs
+        ]
+    results = []
+    for addr in addrs:
+        try:
+            ea = parse_address(addr)
+            results.append({"addr": addr, "value": ida_bytes.get_original_qword(ea)})
+        except Exception as e:
+            results.append({"addr": addr, "value": None, "error": str(e)})
+    return results
+
+
+@tool
+@idasync
+def list_patched_bytes(
+    start: Annotated[str | None, "Start address (default: image base)"] = None,
+    end: Annotated[str | None, "End address (default: image end)"] = None,
+    limit: Annotated[int, "Maximum number of patched bytes to return (default: 1000)"] = 1000,
+) -> dict:
+    """List patched bytes between start/end addresses."""
+    if not hasattr(ida_bytes, "get_original_byte"):
+        return {
+            "patched": [],
+            "count": 0,
+            "range": None,
+            "error": "Original-byte API unavailable in this IDA version",
+        }
+
+    if start:
+        start_ea = parse_address(start)
+    else:
+        start_ea = ida_ida.inf_get_min_ea()
+    if end:
+        end_ea = parse_address(end)
+    else:
+        end_ea = ida_ida.inf_get_max_ea()
+
+    patches = []
+    count_hits = 0
+    scan_errors: list[dict] = []
+    ea = start_ea
+
+    while ea < end_ea and count_hits < limit:
+        try:
+            original = ida_bytes.get_original_byte(ea)
+            current = ida_bytes.get_byte(ea)
+            if original != current:
+                patches.append(
+                    {
+                        "addr": hex(ea),
+                        "original": hex(original),
+                        "current": hex(current),
+                    }
+                )
+                count_hits += 1
+        except Exception as e:  # pragma: no cover - depends on IDA runtime state
+            scan_errors.append({"addr": hex(ea), "error": str(e)})
+            if len(scan_errors) >= 20:
+                break
+        ea += 1
+
+    if scan_errors:
+        return {
+            "patched": patches,
+            "count": len(patches),
+            "range": {"start": hex(start_ea), "end": hex(end_ea)},
+            "scan_errors": scan_errors,
+            "error_count": len(scan_errors),
+        }
+
+    return {
+        "patched": patches,
+        "count": len(patches),
+        "range": {"start": hex(start_ea), "end": hex(end_ea)},
+    }
+
