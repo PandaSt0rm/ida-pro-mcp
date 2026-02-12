@@ -147,6 +147,20 @@ class StructFieldQuery(TypedDict):
     field: Annotated[str, "Field name"]
 
 
+class PathQuery(TypedDict):
+    """Path query for control flow analysis"""
+
+    source: Annotated[str, "Source address (hex or function name)"]
+    target: Annotated[str, "Target address (hex or function name)"]
+
+
+class StringFilter(TypedDict, total=False):
+    """Filter for string search operations"""
+
+    pattern: Annotated[str, "Glob pattern to match string content"]
+    min_length: Annotated[int, "Minimum string length"]
+
+
 class ListQuery(TypedDict, total=False):
     """Pagination query for listing operations"""
 

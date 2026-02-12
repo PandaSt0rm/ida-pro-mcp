@@ -36,13 +36,18 @@ def _mcp_action_logger(action_type: str, name: str, arguments: dict | None, resu
         error_str = str(result)
         if len(error_str) > 100:
             error_str = error_str[:97] + "..."
-        ida_kernwin.msg(f"[MCP] {action_type} ERROR: {name}({args_str}) -> {error_str}\n")
+        msg = f"[MCP] {action_type} ERROR: {name}({args_str}) -> {error_str}\n"
     else:
-        ida_kernwin.msg(f"[MCP] {action_type}: {name}({args_str})\n")
+        msg = f"[MCP] {action_type}: {name}({args_str})\n"
+
+    # ida_kernwin.msg must be called from IDA's main thread
+    import idaapi
+    idaapi.execute_sync(lambda: ida_kernwin.msg(msg), idaapi.MFF_NOWAIT)
 
 
 # Enable MCP action logging to IDA output
-MCP_SERVER.set_action_callback(_mcp_action_logger)
+# Temporarily disabled to debug crash
+# MCP_SERVER.set_action_callback(_mcp_action_logger)
 
 
 T = TypeVar("T")
@@ -207,30 +212,6 @@ class IdaMcpHttpRequestHandler(McpHttpRequestHandler):
         """
         host = self.headers.get("Host")
         port = self.server_port
-        if host not in (f"127.0.0.1:{port}", f"localhost:{port}"):
-            self.send_error(403, "Invalid Host")
-            return False
-        return True
-
-    def _check_origin(self) -> bool:
-        """
-        Prevents CSRF and DNS rebinding attacks by ensuring POST requests
-        originate from pages served by this server, not external websites.
-        """
-        origin = self.headers.get("Origin")
-        port = cast(HTTPServer, self.server).server_port
-        if origin not in (f"http://127.0.0.1:{port}", f"http://localhost:{port}"):
-            self.send_error(403, "Invalid Origin")
-            return False
-        return True
-
-    def _check_host(self) -> bool:
-        """
-        Prevents DNS rebinding attacks where an attacker's domain (e.g., evil.com)
-        resolves to 127.0.0.1, allowing their page to read localhost resources.
-        """
-        host = self.headers.get("Host")
-        port = cast(HTTPServer, self.server).server_port
         if host not in (f"127.0.0.1:{port}", f"localhost:{port}"):
             self.send_error(403, "Invalid Host")
             return False

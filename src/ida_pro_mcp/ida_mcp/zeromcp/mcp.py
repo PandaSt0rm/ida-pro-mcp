@@ -441,36 +441,15 @@ class McpServer:
 
     def _mcp_tools_call(self, name: str, arguments: dict | None = None, _meta: dict | None = None) -> dict:
         """MCP tools/call method"""
-        # Check if tool requires an extension that isn't enabled
-        enabled = getattr(self._enabled_extensions, "data", set())
-        tool_group = self._get_tool_extension(name)
-        if tool_group and tool_group not in enabled:
-            error_msg = f"Tool '{name}' requires extension '{tool_group}'. Enable with ?ext={tool_group}"
-            if self._action_callback:
-                self._action_callback("tool", name, arguments, error_msg, True)
-            return {
-                "content": [{"type": "text", "text": f"Tool '{name}' requires extension '{tool_group}'. Enable with ?ext={tool_group}"}],
-                "isError": True,
-            }
-
-        # Register request for cancellation tracking
-        request_id = get_current_request_id()
-        if request_id is not None:
-            register_pending_request(request_id)
-
+        import traceback
         try:
-            # Wrap tool call in JSON-RPC request
-            tool_response = self.tools.dispatch({
-                "jsonrpc": "2.0",
-                "method": name,
-                "params": arguments,
-                "id": None,
-            })
-
-            # Check for error response
-            if tool_response and "error" in tool_response:
-                error = tool_response["error"]
-                error_msg = error.get("message", "Unknown error")
+            # Check if tool requires an extension that isn't enabled
+            enabled = getattr(self._enabled_extensions, "data", set())
+            tool_group = self._get_tool_extension(name)
+            if tool_group and tool_group not in enabled:
+                error_msg = (
+                    f"Tool '{name}' requires extension '{tool_group}'. Enable with ?ext={tool_group}"
+                )
                 if self._action_callback:
                     self._action_callback("tool", name, arguments, error_msg, True)
                 return {
@@ -478,17 +457,54 @@ class McpServer:
                     "isError": True,
                 }
 
-            result = tool_response.get("result") if tool_response else None
-            if self._action_callback:
-                self._action_callback("tool", name, arguments, result, False)
-            return {
-                "content": [{"type": "text", "text": json.dumps(result, indent=2)}],
-                "structuredContent": result if isinstance(result, dict) else {"result": result},
-                "isError": False,
-            }
-        finally:
+            # Register request for cancellation tracking
+            request_id = get_current_request_id()
             if request_id is not None:
-                unregister_pending_request(request_id)
+                register_pending_request(request_id)
+
+            try:
+                # Wrap tool call in JSON-RPC request
+                tool_response = self.tools.dispatch(
+                    {
+                        "jsonrpc": "2.0",
+                        "method": name,
+                        "params": arguments,
+                        "id": None,
+                    }
+                )
+
+                # Check for error response
+                if tool_response and "error" in tool_response:
+                    error = tool_response["error"]
+                    error_msg = error.get("message", "Unknown error")
+                    if self._action_callback:
+                        self._action_callback("tool", name, arguments, error_msg, True)
+                    return {
+                        "content": [{"type": "text", "text": error_msg}],
+                        "isError": True,
+                    }
+
+                result = tool_response.get("result") if tool_response else None
+                if self._action_callback:
+                    self._action_callback("tool", name, arguments, result, False)
+                return {
+                    "content": [{"type": "text", "text": json.dumps(result, indent=2)}],
+                    "structuredContent": (
+                        result if isinstance(result, dict) else {"result": result}
+                    ),
+                    "isError": False,
+                }
+            finally:
+                if request_id is not None:
+                    unregister_pending_request(request_id)
+        except Exception:
+            import os
+
+            log_path = os.path.expanduser("~/ida_mcp_crash.log")
+            with open(log_path, "a") as f:
+                f.write(f"\n{'='*60}\nTool: {name}\nArgs: {arguments}\n")
+                f.write(traceback.format_exc())
+            raise
 
     def _mcp_notifications_cancelled(self, requestId: int | str, reason: str | None = None) -> None:
         """MCP notifications/cancelled - cancel an in-flight request"""
@@ -560,8 +576,10 @@ class McpServer:
                 if tool_response and "error" in tool_response:
                     error = tool_response["error"]
                     error_msg = error.get("message", "Unknown error")
-                    if self._on_action:
-                        self._on_action("resource", uri, {"params": params}, error_msg, True)
+                    if self._action_callback:
+                        self._action_callback(
+                            "resource", uri, {"params": params}, error_msg, True
+                        )
                     return {
                         "contents": [{
                             "uri": uri,
@@ -572,8 +590,10 @@ class McpServer:
                     }
 
                 result = tool_response.get("result") if tool_response else None
-                if self._on_action:
-                    self._on_action("resource", uri, {"params": params}, result, False)
+                if self._action_callback:
+                    self._action_callback(
+                        "resource", uri, {"params": params}, result, False
+                    )
                 return {
                     "contents": [{
                         "uri": uri,
@@ -584,8 +604,10 @@ class McpServer:
 
         # No matching resource found
         available: list[str] = [getattr(f, "__resource_uri__") for f in self.resources.methods.values()]
-        if self._on_action:
-            self._on_action("resource", uri, None, f"Resource not found: {uri}", True)
+        if self._action_callback:
+            self._action_callback(
+                "resource", uri, None, f"Resource not found: {uri}", True
+            )
         return {
             "contents": [{
                 "uri": uri,
