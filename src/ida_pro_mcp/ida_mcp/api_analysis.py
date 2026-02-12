@@ -21,6 +21,7 @@ from .utils import (
     parse_address,
     normalize_list_input,
     get_function,
+    get_xrefs_from_internal,
     get_prototype,
     get_stack_frame_variables_internal,
     decompile_function_safe,
@@ -35,6 +36,82 @@ from .utils import (
     StructFieldQuery,
     InsnPattern,
 )
+
+
+def _import_optional_module(module_name: str):
+    try:
+        import importlib
+
+        return importlib.import_module(module_name)
+    except Exception:
+        return None
+
+
+_ida_problems = _import_optional_module("ida_problems")
+_ida_tryblks = _import_optional_module("ida_tryblks")
+_ida_fixup = _import_optional_module("ida_fixup")
+
+
+_PROBLEM_DESCRIPTIONS = {
+    "PR_NOBASE": "The segment for the address cannot be determined",
+    "PR_NONAME": "A name in the instruction has no resolution",
+    "PR_NOFOP": "A function operand has no resolution",
+    "PR_NOCMT": "A comment operand has no resolution",
+    "PR_NOXREFS": "Address has no references - possibly orphaned code",
+    "PR_JUMP": "Jump or call to an illegal address",
+    "PR_DISASM": "Can't disassemble",
+    "PR_HEAD": "Can't make data at address (probably code)",
+    "PR_ILLADDR": "Illegal address used in instruction operand",
+    "PR_MANYLINES": "Too many lines generated (>= 128K)",
+    "PR_BADSTACK": "Stack analysis problems",
+    "PR_ATTN": "Attention! Probably erroneous situation",
+    "PR_ROLLED": "Instruction has rolled back analysis",
+    "PR_COLLISION": "Names collision (already exists)",
+    "PR_DECIMP": "Decompiler/plugin notification",
+}
+
+
+def _build_problem_type_map() -> dict[str, int]:
+    if _ida_problems is None:
+        return {}
+
+    mapping: dict[str, int] = {}
+    for name in dir(_ida_problems):
+        if not name.startswith("PR_"):
+            continue
+        value = getattr(_ida_problems, name)
+        if isinstance(value, int):
+            mapping[name] = value
+    return mapping
+
+
+_PROBLEM_TYPES = _build_problem_type_map()
+
+
+def _build_fixup_types() -> dict[int, str]:
+    if _ida_fixup is None:
+        return {}
+    types: dict[int, str] = {}
+    for name in [
+        "FIXUP_OFF8",
+        "FIXUP_OFF16",
+        "FIXUP_SEG16",
+        "FIXUP_PTR16",
+        "FIXUP_PTR32",
+        "FIXUP_OFF32",
+        "FIXUP_HI8",
+        "FIXUP_HI16",
+        "FIXUP_LOW8",
+        "FIXUP_LOW16",
+        "FIXUP_OFF64",
+        "FIXUP_CUSTOM",
+    ]:
+        if hasattr(_ida_fixup, name):
+            types[getattr(_ida_fixup, name)] = name.replace("FIXUP_", "")
+    return types
+
+
+_FIXUP_TYPES = _build_fixup_types()
 
 # ============================================================================
 # Instruction Helpers
@@ -375,6 +452,328 @@ def xrefs_to(
             results.append({"addr": addr, "xrefs": None, "error": str(e)})
 
     return results
+
+
+# ============================================================================
+# Outbound Cross-References
+# ============================================================================
+
+
+@tool
+@idasync
+def xrefs_from(
+    addrs: Annotated[list[str] | str, "Addresses to find cross-references from"],
+    limit: Annotated[int, "Max xrefs per address (default: 100, max: 1000)"] = 100,
+) -> list[dict]:
+    """Get cross-references from specified addresses"""
+    addrs = normalize_list_input(addrs)
+    if limit <= 0 or limit > 1000:
+        limit = 1000
+
+    results = []
+    for addr in addrs:
+        try:
+            ea = parse_address(addr)
+            xrefs = []
+            more = False
+            all_xrefs = get_xrefs_from_internal(ea)
+            for xref in all_xrefs[:limit]:
+                xrefs.append(
+                    {
+                        "to": xref.get("addr"),
+                        "type": xref.get("type"),
+                        "function": xref.get("fn"),
+                    }
+                )
+            more = len(all_xrefs) > limit
+            results.append({"addr": addr, "xrefs": xrefs, "more": more})
+        except Exception as e:
+            results.append({"addr": addr, "xrefs": [], "error": str(e)})
+    return results
+
+
+# ============================================================================
+# Problem List
+# ============================================================================
+
+
+@tool
+@idasync
+def problems(
+    problem_type: Annotated[
+        str | None,
+        "Optional filter: PR_NOBASE, PR_DISASM, PR_NOXREFS, PR_BADSTACK, etc.",
+    ] = None,
+) -> list[dict]:
+    """List analysis problems found by IDA."""
+    if _ida_problems is None:
+        return [
+            {
+                "error": "ida_problems module unavailable in this IDA build"
+            }
+        ]
+
+    if not _PROBLEM_TYPES:
+        return [{"error": "No problem type constants available"}]
+
+    if not hasattr(_ida_problems, "get_problem"):
+        return [{"error": "ida_problems.get_problem is unavailable in this IDA build"}]
+
+    if problem_type:
+        normalized = problem_type.upper()
+        if normalized not in _PROBLEM_TYPES:
+            valid = ", ".join(sorted(_PROBLEM_TYPES.keys()))
+            return [{"error": f"Unknown problem type '{problem_type}'. Valid types: {valid}"}]
+        types_to_check = [normalized]
+    else:
+        types_to_check = [name for name in _PROBLEM_TYPES if name != "PR_FINAL"]
+
+    results = []
+    for name in types_to_check:
+        pr_type = _PROBLEM_TYPES[name]
+        ea = _ida_problems.get_problem(pr_type, ida_ida.inf_get_min_ea())
+        seen = 0
+        max_iterations = 100000
+        while ea != idaapi.BADADDR:
+            if seen >= max_iterations:
+                break
+            seen += 1
+            func_name = None
+            func = idaapi.get_func(ea)
+            if func:
+                func_name = ida_funcs.get_func_name(func.start_ea)
+
+            description = None
+            if hasattr(_ida_problems, "get_problem_desc"):
+                try:
+                    description = _ida_problems.get_problem_desc(pr_type, ea)
+                except Exception:
+                    description = None
+
+            results.append(
+                {
+                    "addr": hex(ea),
+                    "type": name,
+                    "type_desc": _PROBLEM_DESCRIPTIONS.get(name, "Unknown"),
+                    "description": description,
+                    "function": func_name,
+                }
+            )
+            ea = _ida_problems.get_problem(pr_type, ea + 1)
+
+    return results
+
+
+# ============================================================================
+# Switch / Jump Tables
+# ============================================================================
+
+
+@tool
+@idasync
+def switch_info(
+    addrs: Annotated[list[str] | str, "Addresses to get switch info for"],
+) -> list[dict]:
+    """Get switch/jump table information for addresses."""
+    addrs = normalize_list_input(addrs)
+    results = []
+    for addr in addrs:
+        try:
+            ea = parse_address(addr)
+            si = ida_nalt.switch_info_t()
+            if not ida_nalt.get_switch_info(si, ea):
+                results.append({"addr": addr, "is_switch": False, "error": None})
+                continue
+
+            elem_size = si.get_jtable_element_size()
+            entries = []
+            for i in range(si.get_jtable_size()):
+                entry_ea = si.jumps + (i * elem_size)
+                try:
+                    raw_entry = ida_bytes.get_bytes(entry_ea, elem_size) or b"\x00" * elem_size
+                    target_offset = int.from_bytes(
+                        raw_entry,
+                        "little" if not ida_ida.inf_is_be() else "big",
+                    )
+                    target = target_offset + si.elbase
+                    entries.append(
+                        {
+                            "index": i,
+                            "entry_addr": hex(entry_ea),
+                            "target": hex(target),
+                        }
+                    )
+                except Exception:
+                    continue
+
+            results.append(
+                {
+                    "addr": addr,
+                    "is_switch": True,
+                    "switch_addr": hex(si.startea),
+                    "jump_table_addr": hex(si.jumps),
+                    "jump_table_size": si.get_jtable_size(),
+                    "element_size": elem_size,
+                    "default_case": hex(si.defjump) if si.defjump != idaapi.BADADDR else None,
+                    "lowcase": si.lowcase,
+                    "cases": si.ncases,
+                    "elbase": hex(si.elbase),
+                    "entries": entries,
+                }
+            )
+        except Exception as e:
+            results.append({"addr": addr, "is_switch": False, "error": str(e)})
+
+    return results
+
+
+# ============================================================================
+# Try/Catch Blocks
+# ============================================================================
+
+
+@tool
+@idasync
+def tryblks(
+    addrs: Annotated[list[str] | str, "Function addresses to get try/catch blocks for"],
+) -> list[dict]:
+    """Get exception handling try/catch block information."""
+    addrs = normalize_list_input(addrs)
+    results = []
+    for addr in addrs:
+        try:
+            ea = parse_address(addr)
+            func = idaapi.get_func(ea)
+            if not func:
+                results.append(
+                    {
+                        "addr": addr,
+                        "tryblks": [],
+                        "count": 0,
+                        "error": "Address not in a function",
+                    }
+                )
+                continue
+
+            if _ida_tryblks is None:
+                results.append(
+                    {
+                        "addr": addr,
+                        "error": "ida_tryblks module unavailable in this IDA build",
+                    }
+                )
+                continue
+
+            if not hasattr(_ida_tryblks, "get_tryblks") or not hasattr(_ida_tryblks, "tryblks_t"):
+                results.append(
+                    {
+                        "addr": addr,
+                        "error": "ida_tryblks API is incomplete in this IDA build",
+                    }
+                )
+                continue
+
+            tbv = _ida_tryblks.tryblks_t()
+            func_range = idaapi.range_t(func.start_ea, func.end_ea)
+            count = _ida_tryblks.get_tryblks(tbv, func_range)
+            blocks = []
+            for i in range(count):
+                tb = tbv[i]
+                block_info = {
+                    "level": tb.level if hasattr(tb, "level") else 0,
+                    "try_start": hex(tb.start_ea),
+                    "try_end": hex(tb.end_ea),
+                    "handlers": [],
+                }
+
+                if hasattr(tb, "size"):
+                    for j in range(tb.size()):
+                        handler = tb.at(j) if hasattr(tb, "at") else None
+                        if not handler:
+                            continue
+                        handler_info = {
+                            "type": "seh" if getattr(handler, "disp", 0) != 0 else "cpp"
+                        }
+                        if getattr(handler, "disp", 0) != 0:
+                            handler_info["filter_addr"] = hex(handler.disp)
+                        if getattr(handler, "ea", idaapi.BADADDR) != idaapi.BADADDR:
+                            handler_info["handler_addr"] = hex(handler.ea)
+                        block_info["handlers"].append(handler_info)
+                blocks.append(block_info)
+
+            results.append(
+                {
+                    "addr": addr,
+                    "function": ida_funcs.get_func_name(func.start_ea),
+                    "tryblks": blocks,
+                    "count": len(blocks),
+                }
+            )
+        except Exception as e:
+            results.append({"addr": addr, "tryblks": [], "count": 0, "error": str(e)})
+    return results
+
+
+# ============================================================================
+# Fixup Scanner
+# ============================================================================
+
+
+@tool
+@idasync
+def fixups(
+    start: Annotated[str | None, "Start address (default: image base)"] = None,
+    end: Annotated[str | None, "End address (default: image end)"] = None,
+    limit: Annotated[int, "Maximum number of fixups to return (default: 1000)"] = 1000,
+) -> dict:
+    """List fixups/relocations in the specified address range."""
+    if _ida_fixup is None:
+        return {"error": "ida_fixup module unavailable in this IDA build"}
+
+    if (
+        not hasattr(_ida_fixup, "get_first_fixup_ea")
+        or not hasattr(_ida_fixup, "get_next_fixup_ea")
+    ):
+        return {"error": "ida_fixup API is incomplete in this IDA build"}
+
+    if start:
+        start_ea = parse_address(start)
+    else:
+        start_ea = ida_ida.inf_get_min_ea()
+
+    if end:
+        end_ea = parse_address(end)
+    else:
+        end_ea = ida_ida.inf_get_max_ea()
+
+    if limit <= 0 or limit > 100000:
+        limit = 1000
+
+    results = []
+    count = 0
+    ea = _ida_fixup.get_first_fixup_ea()
+    while ea != idaapi.BADADDR and count < limit:
+        if start_ea <= ea < end_ea:
+            fd = _ida_fixup.fixup_data_t()
+            if _ida_fixup.get_fixup(fd, ea):
+                result_entry = {
+                    "addr": hex(ea),
+                    "type": _FIXUP_TYPES.get(fd.get_type(), f"TYPE_{fd.get_type()}"),
+                    "type_id": fd.get_type(),
+                    "target": hex(fd.off) if fd.off != idaapi.BADADDR else None,
+                    "base": hex(fd.get_base()) if fd.get_base() != idaapi.BADADDR else None,
+                }
+                if hasattr(fd, "displacement"):
+                    result_entry["displacement"] = fd.displacement
+                results.append(result_entry)
+                count += 1
+        ea = _ida_fixup.get_next_fixup_ea(ea)
+
+    return {
+        "fixups": results,
+        "count": len(results),
+        "has_more": ea != idaapi.BADADDR,
+    }
 
 
 @tool
