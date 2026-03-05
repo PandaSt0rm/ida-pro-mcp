@@ -1,4 +1,4 @@
-from typing import Annotated, get_args
+from typing import Annotated
 
 import ida_typeinf
 import ida_hexrays
@@ -18,9 +18,9 @@ from .utils import (
     parse_decls_ctypes,
     my_modifier_t,
     StructRead,
-    TypeApplication,
-    TypeApplicationKind,
+    TypeEdit,
 )
+from . import compat
 
 
 # ============================================================================
@@ -161,11 +161,7 @@ def read_struct(queries: list[StructRead] | StructRead) -> list[dict]:
                 member_addr = addr + offset
                 try:
                     if member.type.is_ptr():
-                        is_64bit = (
-                            ida_ida.inf_is_64bit()
-                            if ida_major >= 9
-                            else idaapi.get_inf_structure().is_64bit()
-                        )
+                        is_64bit = compat.inf_is_64bit()
                         if is_64bit:
                             value = idaapi.get_qword(member_addr)
                             value_str = f"0x{value:016X}"
@@ -232,7 +228,7 @@ def search_structs(
 ) -> list[dict]:
     """Search structs"""
     results = []
-    limit = ida_typeinf.get_ordinal_limit()
+    limit = compat.get_ordinal_limit()
 
     for ordinal in range(1, limit):
         tif = ida_typeinf.tinfo_t()
@@ -368,12 +364,7 @@ def set_type(edits: list[TypeEdit] | TypeEdit) -> list[dict]:
 
                 frame_tif = ida_typeinf.tinfo_t()
                 if not ida_frame.get_func_frame(frame_tif, func):
-                    results.append(
-                        {
-                            "edit": edit,
-                            "error": "Function has no stack frame (may be a thunk or leaf function)",
-                        }
-                    )
+                    results.append({"edit": edit, "error": "No frame"})
                     continue
 
                 idx, udm = frame_tif.get_udm(edit["name"])
@@ -397,12 +388,7 @@ def set_type(edits: list[TypeEdit] | TypeEdit) -> list[dict]:
                 )
 
             else:
-                results.append(
-                    {
-                        "edit": edit,
-                        "error": f"Unknown kind: {kind}. Valid kinds: {', '.join(get_args(TypeApplicationKind))}",
-                    }
-                )
+                results.append({"edit": edit, "error": f"Unknown kind: {kind}"})
 
         except Exception as e:
             results.append({"edit": edit, "error": str(e)})
@@ -424,18 +410,17 @@ def infer_types(
             ea = parse_address(addr)
             tif = ida_typeinf.tinfo_t()
 
-            # Try Hex-Rays inference (guess_tinfo removed in IDA 9)
-            if hasattr(ida_hexrays, "guess_tinfo") and ida_hexrays.init_hexrays_plugin():
-                if ida_hexrays.guess_tinfo(tif, ea):
-                    results.append(
-                        {
-                            "addr": addr,
-                            "inferred_type": str(tif),
-                            "method": "hexrays",
-                            "confidence": "high",
-                        }
-                    )
-                    continue
+            # Try Hex-Rays inference
+            if compat.guess_tinfo(tif, ea):
+                results.append(
+                    {
+                        "addr": addr,
+                        "inferred_type": str(tif),
+                        "method": "hexrays",
+                        "confidence": "high",
+                    }
+                )
+                continue
 
             # Try getting existing type info
             if ida_nalt.get_tinfo(tif, ea):
