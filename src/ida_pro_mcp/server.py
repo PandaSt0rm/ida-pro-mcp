@@ -8,7 +8,7 @@ import tempfile
 import traceback
 import tomllib
 import tomli_w
-from typing import TYPE_CHECKING
+from typing import Any, TYPE_CHECKING
 from urllib.parse import urlparse, urlunparse
 import glob
 
@@ -127,6 +127,7 @@ CLIENT_ALIASES: dict[str, str] = {
 PROJECT_LEVEL_CONFIGS: dict[str, tuple[str, str]] = {
     "Claude Code": ("", ".mcp.json"),
     "Cursor": (".cursor", "mcp.json"),
+    "Opencode": ("", "opencode.json"),
     "VS Code": (".vscode", "mcp.json"),
     "VS Code Insiders": (".vscode", "mcp.json"),
     "Windsurf": (".windsurf", "mcp.json"),
@@ -136,9 +137,15 @@ PROJECT_LEVEL_CONFIGS: dict[str, tuple[str, str]] = {
 # Special JSON structures for project-level configs
 # VS Code project-level .vscode/mcp.json uses {"servers": {...}} at top level
 PROJECT_SPECIAL_JSON_STRUCTURES: dict[str, tuple[str | None, str]] = {
+    "Opencode": (None, "mcp"),
     "VS Code": (None, "servers"),
     "VS Code Insiders": (None, "servers"),
 }
+
+
+def get_opencode_config_dir() -> str:
+    """Return the documented OpenCode config directory."""
+    return os.path.join(os.path.expanduser("~"), ".config", "opencode")
 
 
 def get_python_executable():
@@ -193,6 +200,20 @@ def copy_python_env(env: dict[str, str]):
     return result
 
 
+def _build_stdio_command() -> tuple[list[str], dict[str, str]]:
+    """Build the stdio command and forwarded Python env for local MCP clients."""
+    command = [
+        get_python_executable(),
+        __file__,
+        "--ida-rpc",
+        f"http://{IDA_HOST}:{IDA_PORT}",
+    ]
+    env: dict[str, str] = {}
+    if copy_python_env(env):
+        print("[WARNING] Custom Python environment variables detected")
+    return command, env
+
+
 def normalize_transport_url(transport: str) -> str:
     url = urlparse(transport)
     if url.hostname is None or url.port is None:
@@ -217,17 +238,19 @@ def infer_http_transport_type(transport_url: str) -> str:
 
 def generate_mcp_config(*, client_name: str, transport: str = "stdio"):
     if transport == "stdio":
-        mcp_config = {
-            "command": get_python_executable(),
-            "args": [
-                __file__,
-                "--ida-rpc",
-                f"http://{IDA_HOST}:{IDA_PORT}",
-            ],
-        }
-        env = {}
-        if copy_python_env(env):
-            print("[WARNING] Custom Python environment variables detected")
+        command, env = _build_stdio_command()
+        if client_name == "Opencode":
+            mcp_config = {
+                "type": "local",
+                "command": command,
+                "enabled": True,
+            }
+            if env:
+                mcp_config["environment"] = env
+            return mcp_config
+
+        mcp_config = {"command": command[0], "args": command[1:]}
+        if env:
             mcp_config["env"] = env
         return mcp_config
 
@@ -237,14 +260,26 @@ def generate_mcp_config(*, client_name: str, transport: str = "stdio"):
         transport = f"http://{IDA_HOST}:{IDA_PORT}/sse"
 
     transport_url = normalize_transport_url(transport)
+    transport_type = infer_http_transport_type(transport_url)
 
     # Codex uses streamable HTTP URL-only config.
     if client_name == "Codex":
         return {"url": force_mcp_path(transport_url)}
 
+    if client_name == "Opencode":
+        if transport_type == "sse":
+            raise ValueError(
+                "OpenCode MCP config does not support SSE. Use stdio or streamable HTTP."
+            )
+        return {
+            "type": "remote",
+            "url": force_mcp_path(transport_url),
+            "enabled": True,
+        }
+
     # Claude/Claude Code support explicit transport type in JSON config.
     if client_name in ("Claude", "Claude Code"):
-        return {"type": infer_http_transport_type(transport_url), "url": transport_url}
+        return {"type": transport_type, "url": transport_url}
 
     # Keep all other clients on streamable HTTP /mcp for compatibility.
     return {"type": "http", "url": force_mcp_path(transport_url)}
@@ -323,10 +358,38 @@ def resolve_client_name(input_name: str, available_clients: list[str]) -> str | 
 
 # Global special JSON structures for user-level configs
 GLOBAL_SPECIAL_JSON_STRUCTURES: dict[str, tuple[str | None, str]] = {
+    "Opencode": (None, "mcp"),
     "VS Code": ("mcp", "servers"),
     "VS Code Insiders": ("mcp", "servers"),
     "Visual Studio 2022": (None, "servers"),  # servers at top level
 }
+
+
+def _get_json_mcp_servers(
+    config: dict[str, Any],
+    *,
+    client_name: str,
+    special_structures: dict[str, tuple[str | None, str]],
+    create: bool,
+) -> dict:
+    """Return the MCP-server mapping for a JSON config file."""
+    if client_name in special_structures:
+        top_key, nested_key = special_structures[client_name]
+        if top_key is None:
+            if create and nested_key not in config:
+                config[nested_key] = {}
+            return config.get(nested_key, {})
+
+        if create and top_key not in config:
+            config[top_key] = {}
+        top_obj = config.get(top_key, {})
+        if create and nested_key not in top_obj:
+            top_obj[nested_key] = {}
+        return top_obj.get(nested_key, {})
+
+    if create and "mcpServers" not in config:
+        config["mcpServers"] = {}
+    return config.get("mcpServers", {})
 
 
 def get_global_configs() -> dict[str, tuple[str, str]]:
@@ -429,10 +492,7 @@ def get_global_configs() -> dict[str, tuple[str, str]]:
                 os.path.join(os.path.expanduser("~"), ".aws", "amazonq"),
                 "mcp_config.json",
             ),
-            "Opencode": (
-                os.path.join(os.path.expanduser("~"), ".opencode"),
-                "mcp_config.json",
-            ),
+            "Opencode": (get_opencode_config_dir(), "opencode.json"),
             "Kiro": (
                 os.path.join(os.path.expanduser("~"), ".kiro"),
                 "mcp_config.json",
@@ -588,10 +648,7 @@ def get_global_configs() -> dict[str, tuple[str, str]]:
                 os.path.join(os.path.expanduser("~"), ".aws", "amazonq"),
                 "mcp_config.json",
             ),
-            "Opencode": (
-                os.path.join(os.path.expanduser("~"), ".opencode"),
-                "mcp_config.json",
-            ),
+            "Opencode": (get_opencode_config_dir(), "opencode.json"),
             "Kiro": (
                 os.path.join(os.path.expanduser("~"), ".kiro"),
                 "mcp_config.json",
@@ -721,10 +778,7 @@ def get_global_configs() -> dict[str, tuple[str, str]]:
                 os.path.join(os.path.expanduser("~"), ".aws", "amazonq"),
                 "mcp_config.json",
             ),
-            "Opencode": (
-                os.path.join(os.path.expanduser("~"), ".opencode"),
-                "mcp_config.json",
-            ),
+            "Opencode": (get_opencode_config_dir(), "opencode.json"),
             "Kiro": (
                 os.path.join(os.path.expanduser("~"), ".kiro"),
                 "mcp_config.json",
@@ -794,14 +848,13 @@ def is_client_installed(
     )
     if is_toml:
         mcp_servers = config.get("mcp_servers", {})
-    elif name in special:
-        top_key, nested_key = special[name]
-        if top_key is None:
-            mcp_servers = config.get(nested_key, {})
-        else:
-            mcp_servers = config.get(top_key, {}).get(nested_key, {})
     else:
-        mcp_servers = config.get("mcpServers", {})
+        mcp_servers = _get_json_mcp_servers(
+            config,
+            client_name=name,
+            special_structures=special,
+            create=False,
+        )
 
     return mcp.name in mcp_servers
 
@@ -1143,26 +1196,12 @@ def install_mcp_servers(
                 config["mcp_servers"] = {}
             mcp_servers = config["mcp_servers"]
         else:
-            # Check if this client uses a special JSON structure
-            if name in special_json_structures:
-                top_key, nested_key = special_json_structures[name]
-                if top_key is None:
-                    # servers at top level (e.g., Visual Studio 2022)
-                    if nested_key not in config:
-                        config[nested_key] = {}
-                    mcp_servers = config[nested_key]
-                else:
-                    # nested structure (e.g., VS Code uses mcp.servers)
-                    if top_key not in config:
-                        config[top_key] = {}
-                    if nested_key not in config[top_key]:
-                        config[top_key][nested_key] = {}
-                    mcp_servers = config[top_key][nested_key]
-            else:
-                # Default: mcpServers at top level
-                if "mcpServers" not in config:
-                    config["mcpServers"] = {}
-                mcp_servers = config["mcpServers"]
+            mcp_servers = _get_json_mcp_servers(
+                config,
+                client_name=name,
+                special_structures=special_json_structures,
+                create=True,
+            )
 
         # Migrate old name
         old_name = "github.com/mrexodia/ida-pro-mcp"
@@ -1565,7 +1604,9 @@ def main():
     try:
         transport = args.transport or "stdio"
         if transport == "stdio":
-            mcp.stdio()
+            from ida_pro_mcp.stdio_bridge import create_stdio_bridge
+
+            create_stdio_bridge(args.ida_rpc).stdio()
         else:
             url = urlparse(transport)
             if url.hostname is None or url.port is None:

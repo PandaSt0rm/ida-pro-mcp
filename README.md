@@ -354,7 +354,28 @@ npx -y @modelcontextprotocol/inspector
 
 This will open a web interface at http://localhost:5173 and allow you to interact with the MCP tools for testing.
 
-For testing I create a symbolic link to the IDA plugin and then POST a JSON-RPC request directly to `http://localhost:13337/mcp`. After [enabling symbolic links](https://learn.microsoft.com/en-us/windows/apps/get-started/enable-your-device-for-development) you can run the following command:
+For host-Python unit tests that cover CLI/config/proxy behavior without IDA:
+
+```sh
+uv run python -m unittest discover -s tests/unit
+```
+
+For the IDA-backed MCP suite:
+
+```sh
+uv run ida-mcp-test tests/crackme03.elf
+uv run ida-mcp-test tests/typed_fixture.elf
+```
+
+For coverage on the IDA-backed suite:
+
+```sh
+uv run coverage run -m ida_pro_mcp.test tests/crackme03.elf -q
+uv run coverage run --append -m ida_pro_mcp.test tests/typed_fixture.elf -q
+uv run coverage report --show-missing
+```
+
+For manual end-to-end testing I create a symbolic link to the IDA plugin and then POST a JSON-RPC request directly to `http://localhost:13337/mcp`. After [enabling symbolic links](https://learn.microsoft.com/en-us/windows/apps/get-started/enable-your-device-for-development) you can run the following command:
 
 ```sh
 uv run ida-pro-mcp --install

@@ -1,0 +1,40 @@
+name: python-unit-tests
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  pull_request_target:
+  workflow_dispatch:
+
+jobs:
+  python-unit-tests:
+    runs-on: ${{ matrix.os }}
+    if: |
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
+        python-version:
+          - "3.11"
+          - "3.14"
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - uses: astral-sh/setup-uv@v7
+
+      - name: Run unit tests
+        env:
+          PYTHONPATH: src
+        run: uv run --python ${{ matrix.python-version }} python -m unittest discover -s tests/unit

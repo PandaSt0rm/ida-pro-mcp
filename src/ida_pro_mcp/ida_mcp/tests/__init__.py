@@ -14,6 +14,8 @@ from . import test_api_stack
 from . import test_api_resources
 from . import test_api_python
 from . import test_framework_helpers
+from . import test_mcp_protocol
+from . import test_mcp_schema
 from . import test_typed_fixture
 from . import test_utils
 from . import test_api_analysis_internals

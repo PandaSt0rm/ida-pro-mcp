@@ -17,7 +17,7 @@ from .utils import (
     parse_decls_ctypes,
     my_modifier_t,
     StructRead,
-    TypeEdit,
+    TypeApplication,
 )
 from . import compat
 
@@ -264,7 +264,7 @@ def search_structs(
 
 @tool
 @idasync
-def set_type(edits: list[TypeEdit] | TypeEdit) -> list[dict]:
+def set_type(edits: list[TypeApplication] | TypeApplication) -> list[dict]:
     """Apply types (function/global/local/stack)"""
 
     def parse_addr_type(s: str) -> dict:

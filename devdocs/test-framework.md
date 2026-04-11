@@ -2,6 +2,8 @@
 
 This document provides detailed documentation for the test framework used in ida-pro-mcp.
 
+This document covers the IDA-backed test framework in `src/ida_pro_mcp/ida_mcp/tests` and the `ida-mcp-test` runner. Plain host-Python tests for non-IDA code such as `server.py` live in `tests/unit` and run with `python -m unittest discover -s tests/unit`.
+
 ## Overview
 
 The test framework is a custom, lightweight testing solution designed specifically for testing IDA Pro MCP tools. It supports:
@@ -11,6 +13,12 @@ The test framework is a custom, lightweight testing solution designed specifical
 - **Standalone runner** - Run tests headlessly using idalib
 - **Code coverage** - Measure code coverage of API implementations
 - **Binary-agnostic assertions** - Tests that work on any binary
+
+For the separate plain-Python unit suite:
+
+```sh
+uv run python -m unittest discover -s tests/unit
+```
 
 ## Architecture
 

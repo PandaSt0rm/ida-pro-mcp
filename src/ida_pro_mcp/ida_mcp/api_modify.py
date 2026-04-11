@@ -1,3 +1,5 @@
+from typing import Annotated
+
 import idaapi
 import idautils
 import idc
