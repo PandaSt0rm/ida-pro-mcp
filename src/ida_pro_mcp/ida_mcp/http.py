@@ -81,6 +81,7 @@ def handle_enabled_tools(registry: McpRpcRegistry, config_key: str):
     enabled_tools = config_json_get(
         config_key, {name: True for name in original_tools.keys()}
     )
+    original_enabled_tools = enabled_tools.copy()
     new_tools = [name for name in original_tools if name not in enabled_tools]
 
     removed_tools = [name for name in enabled_tools if name not in original_tools]
@@ -90,6 +91,17 @@ def handle_enabled_tools(registry: McpRpcRegistry, config_key: str):
 
     if new_tools:
         enabled_tools.update({name: True for name in new_tools})
+
+    try:
+        from .api_discovery import _LOCAL_TOOL_NAMES as PROTECTED_TOOLS
+    except Exception:
+        PROTECTED_TOOLS = set()
+
+    for name in PROTECTED_TOOLS:
+        if name in original_tools:
+            enabled_tools[name] = True
+
+    if enabled_tools != original_enabled_tools:
         config_json_set(config_key, enabled_tools)
 
     registry.methods = {
@@ -138,7 +150,13 @@ class IdaMcpHttpRequestHandler(McpHttpRequestHandler):
                 return
             self._handle_config_post()
         else:
-            super().do_POST()
+            # Mark proxied requests so _redirecting_dispatch won't re-proxy (loop prevention)
+            from .api_discovery import PROXY_HEADER, set_request_proxied
+            set_request_proxied(self.headers.get(PROXY_HEADER) == "1")
+            try:
+                super().do_POST()
+            finally:
+                set_request_proxied(False)
 
     def do_GET(self):
         """Handles GET requests."""
@@ -154,6 +172,8 @@ class IdaMcpHttpRequestHandler(McpHttpRequestHandler):
         # Handle output download requests
         output_match = re.match(r"^/output/([a-f0-9-]+)\.(\w+)$", path)
         if output_match:
+            if not self._check_api_request():
+                return
             self._handle_output_download(output_match.group(1), output_match.group(2))
             return
 
@@ -412,8 +432,11 @@ input[type="submit"]:hover {
         config_json_set("cors_policy", cors_policy)
         self.update_cors_policy()
 
-        # Update the server's tools
+        # Update the server's tools (discovery tools cannot be disabled)
+        from .api_discovery import _LOCAL_TOOL_NAMES as PROTECTED_TOOLS
         enabled_tools = {name: name in postvars for name in ORIGINAL_TOOLS.keys()}
+        for name in PROTECTED_TOOLS:
+            enabled_tools[name] = True
         self.mcp_server.tools.methods = {
             name: func
             for name, func in ORIGINAL_TOOLS.items()

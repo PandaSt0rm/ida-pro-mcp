@@ -7,11 +7,12 @@ import uuid
 import json
 import gzip
 import zlib
+import ipaddress
 import inspect
 import threading
 import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer, HTTPServer
-from typing import Any, Callable, Literal, Union, Annotated, BinaryIO, NotRequired, get_origin, get_args, get_type_hints, is_typeddict
+from typing import Any, Callable, Union, Annotated, BinaryIO, NotRequired, get_origin, get_args, get_type_hints, is_typeddict
 from types import UnionType
 from urllib.parse import urlparse, parse_qs
 from io import BufferedIOBase
@@ -63,6 +64,61 @@ class _McpSseConnection:
             self.alive = False
             return False
 
+
+def _origin_allowed_by_policy(
+    allowed: Callable[[str], bool] | list[str] | str | None,
+    origin: str,
+) -> bool:
+    if not origin or allowed is None:
+        return False
+    if callable(allowed):
+        return allowed(origin)
+    if isinstance(allowed, str):
+        allowed = [allowed]
+    return "*" in allowed or origin in allowed
+
+
+def _parse_host_header(host_header: str | None) -> str | None:
+    if not host_header:
+        return None
+
+    host_header = host_header.strip()
+    if not host_header:
+        return None
+
+    if host_header.startswith("["):
+        end = host_header.find("]")
+        if end == -1:
+            return None
+        return host_header[1:end]
+
+    if host_header.count(":") == 1:
+        return host_header.rsplit(":", 1)[0]
+
+    return host_header
+
+
+def _is_loopback_host(host: str) -> bool:
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return host.lower() == "localhost"
+
+
+def _host_header_allowed_for_bind(bound_host: str, host_header: str | None) -> bool:
+    """Reject DNS-rebinding style Host headers when the server is loopback-bound."""
+    if host_header is None:
+        return True
+
+    host_name = _parse_host_header(host_header)
+    if host_name is None:
+        return False
+
+    if not _is_loopback_host(bound_host):
+        return True
+
+    return _is_loopback_host(host_name)
+
 class McpHttpRequestHandler(BaseHTTPRequestHandler):
     server_version = "zeromcp/1.3.0"
     error_message_format = "%(code)d - %(message)s"
@@ -86,19 +142,7 @@ class McpHttpRequestHandler(BaseHTTPRequestHandler):
 
     def send_cors_headers(self, *, preflight = False):
         origin = self.headers.get("Origin", "")
-        if not origin:
-            return
-        def is_allowed():
-            allowed = self.mcp_server.cors_allowed_origins
-            if allowed is None:
-                return False
-            if callable(allowed):
-                return allowed(origin)
-            if isinstance(allowed, str):
-                allowed = [allowed]
-            assert isinstance(allowed, list)
-            return "*" in allowed or origin in allowed
-        if not is_allowed():
+        if not _origin_allowed_by_policy(self.mcp_server.cors_allowed_origins, origin):
             return
         self.send_header("Access-Control-Allow-Origin", origin)
         if preflight:
@@ -122,7 +166,30 @@ class McpHttpRequestHandler(BaseHTTPRequestHandler):
             # Client disconnected - normal, suppress traceback
             pass
 
+    def _check_api_request(self) -> bool:
+        """Block browser traffic that violates the configured origin policy.
+
+        Browsers can bypass passive CORS-only defenses during DNS rebinding
+        because same-origin requests do not need CORS. Rejecting unexpected Host
+        and Origin headers closes that gap while keeping direct clients working.
+        """
+        bound_host = self.server.server_address[0]
+        if not _host_header_allowed_for_bind(bound_host, self.headers.get("Host")):
+            self.send_error(403, "Invalid Host")
+            return False
+
+        origin = self.headers.get("Origin", "")
+        if origin and not _origin_allowed_by_policy(
+            self.mcp_server.cors_allowed_origins, origin
+        ):
+            self.send_error(403, "Invalid Origin")
+            return False
+
+        return True
+
     def do_GET(self):
+        if not self._check_api_request():
+            return
         match urlparse(self.path).path:
             case "/sse":
                 self._handle_sse_get()
@@ -132,6 +199,8 @@ class McpHttpRequestHandler(BaseHTTPRequestHandler):
                 self.send_error(404, "Not Found")
 
     def do_POST(self):
+        if not self._check_api_request():
+            return
         body = self._read_body()
         if body is None:
             return
@@ -146,6 +215,8 @@ class McpHttpRequestHandler(BaseHTTPRequestHandler):
 
     def do_OPTIONS(self):
         """Handle CORS preflight requests"""
+        if not self._check_api_request():
+            return
         self.send_response(200)
         self.send_cors_headers(preflight=True)
         self.end_headers()
@@ -168,6 +239,7 @@ class McpHttpRequestHandler(BaseHTTPRequestHandler):
 
     def _read_chunked(self) -> bytes:
         body = b""
+        limit = self.mcp_server.post_body_limit
         while True:
             line = self.rfile.readline().split(b";")[0].strip()
             chunk_size = int(line, 16)
@@ -176,7 +248,9 @@ class McpHttpRequestHandler(BaseHTTPRequestHandler):
                 while self.rfile.readline().strip():
                     pass
                 break
-            body += self.rfile.read(chunk_size)
+            body += self.rfile.read(min(chunk_size, limit + 1 - len(body)))
+            if len(body) > limit:
+                return body
             self.rfile.readline()
         return body
 
@@ -369,7 +443,6 @@ class McpServer:
         self._transport_session_id = threading.local()
         self._enabled_extensions = threading.local()  # set[str] per request
         self._extensions_registry = extensions if extensions is not None else {}  # group -> set of tool names
-        self._action_callback: Callable[[str, str, dict | None, Any, bool], None] | None = None
         self.require_streamable_http_session = False
 
         # Register MCP protocol methods with correct names
@@ -383,20 +456,8 @@ class McpServer:
         self.registry.methods["resources/read"] = self._mcp_resources_read
         self.registry.methods["prompts/list"] = self._mcp_prompts_list
         self.registry.methods["prompts/get"] = self._mcp_prompts_get
+        self.registry.methods["notifications/initialized"] = self._mcp_notifications_initialized
         self.registry.methods["notifications/cancelled"] = self._mcp_notifications_cancelled
-
-    def set_action_callback(self, callback: Callable[[str, str, dict | None, Any, bool], None] | None):
-        """Set a callback to be invoked when tools/resources are called.
-
-        Args:
-            callback: Function(action_type, name, arguments, result, is_error) or None to disable.
-                - action_type: "tool" or "resource"
-                - name: Name of the tool/resource
-                - arguments: Arguments dict passed to the call (None if no args)
-                - result: The result or error message
-                - is_error: True if the call resulted in an error
-        """
-        self._action_callback = callback
 
     def tool(self, func: Callable) -> Callable:
         return self.tools.method(func)
@@ -422,11 +483,20 @@ class McpServer:
             request_handler,
             bind_and_activate=False
         )
-        # allow_reuse_address=True allows fast restarts (skip TCP TIME_WAIT).
-        # Do NOT set allow_reuse_port: on macOS SO_REUSEPORT lets multiple
-        # processes silently bind the same port, causing request mis-routing
-        # and SIGPIPE crashes when one instance closes.
-        self._http_server.allow_reuse_address = True
+        # Fast restarts: skip TCP TIME_WAIT so a port can be reused immediately
+        # after the server stops. On Windows, SO_REUSEADDR is dangerous (allows
+        # multiple processes to bind the same port silently), so we use
+        # SO_EXCLUSIVEADDRUSE instead, which still allows TIME_WAIT reuse but
+        # prevents port hijacking. On Unix, SO_REUSEADDR is the correct option.
+        import sys
+        if sys.platform == "win32":
+            import socket
+            self._http_server.allow_reuse_address = False
+            self._http_server.socket.setsockopt(
+                socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1  # type: ignore[attr-defined]
+            )
+        else:
+            self._http_server.allow_reuse_address = True
 
         # Set the MCPServer instance on the handler class
         setattr(self._http_server, "mcp_server", self)
@@ -571,70 +641,50 @@ class McpServer:
 
     def _mcp_tools_call(self, name: str, arguments: dict | None = None, _meta: dict | None = None) -> dict:
         """MCP tools/call method"""
-        import traceback
+        # Check if tool requires an extension that isn't enabled
+        enabled = getattr(self._enabled_extensions, "data", set())
+        tool_group = self._get_tool_extension(name)
+        if tool_group and tool_group not in enabled:
+            return {
+                "content": [{"type": "text", "text": f"Tool '{name}' requires extension '{tool_group}'. Enable with ?ext={tool_group}"}],
+                "isError": True,
+            }
+
+        # Register request for cancellation tracking
+        request_id = get_current_request_id()
+        if request_id is not None:
+            register_pending_request(request_id)
+
         try:
-            # Check if tool requires an extension that isn't enabled
-            enabled = getattr(self._enabled_extensions, "data", set())
-            tool_group = self._get_tool_extension(name)
-            if tool_group and tool_group not in enabled:
-                error_msg = (
-                    f"Tool '{name}' requires extension '{tool_group}'. Enable with ?ext={tool_group}"
-                )
-                if self._action_callback:
-                    self._action_callback("tool", name, arguments, error_msg, True)
+            # Wrap tool call in JSON-RPC request
+            tool_response = self.tools.dispatch({
+                "jsonrpc": "2.0",
+                "method": name,
+                "params": arguments,
+                "id": None,
+            })
+
+            # Check for error response
+            if tool_response and "error" in tool_response:
+                error = tool_response["error"]
                 return {
-                    "content": [{"type": "text", "text": error_msg}],
+                    "content": [{"type": "text", "text": error.get("message", "Unknown error")}],
                     "isError": True,
                 }
 
-            # Register request for cancellation tracking
-            request_id = get_current_request_id()
+            result = tool_response.get("result") if tool_response else None
+            return {
+                "content": [{"type": "text", "text": json.dumps(result, separators=(",", ":"))}],
+                "structuredContent": result if isinstance(result, dict) else {"result": result},
+                "isError": False,
+            }
+        finally:
             if request_id is not None:
-                register_pending_request(request_id)
+                unregister_pending_request(request_id)
 
-            try:
-                # Wrap tool call in JSON-RPC request
-                tool_response = self.tools.dispatch(
-                    {
-                        "jsonrpc": "2.0",
-                        "method": name,
-                        "params": arguments,
-                        "id": None,
-                    }
-                )
-
-                # Check for error response
-                if tool_response and "error" in tool_response:
-                    error = tool_response["error"]
-                    error_msg = error.get("message", "Unknown error")
-                    if self._action_callback:
-                        self._action_callback("tool", name, arguments, error_msg, True)
-                    return {
-                        "content": [{"type": "text", "text": error_msg}],
-                        "isError": True,
-                    }
-
-                result = tool_response.get("result") if tool_response else None
-                if self._action_callback:
-                    self._action_callback("tool", name, arguments, result, False)
-                return {
-                    "content": [{"type": "text", "text": json.dumps(result, indent=2)}],
-                    "structuredContent": (
-                        result if isinstance(result, dict) else {"result": result}
-                    ),
-                    "isError": False,
-                }
-            finally:
-                if request_id is not None:
-                    unregister_pending_request(request_id)
-        except Exception:
-            import os
-
-            log_path = os.path.expanduser("~/ida_mcp_crash.log")
-            with open(log_path, "a") as f:
-                f.write(f"\n{'='*60}\nTool: {name}\nArgs: {arguments}\n")
-                f.write(traceback.format_exc())
-            raise
+    def _mcp_notifications_initialized(self) -> None:
+        """MCP notifications/initialized - client signals initialization complete"""
+        # Notifications don't return a response
 
     def _mcp_notifications_cancelled(self, requestId: int | str, reason: str | None = None) -> None:
         """MCP notifications/cancelled - cancel an in-flight request"""
@@ -705,39 +755,26 @@ class McpServer:
 
                 if tool_response and "error" in tool_response:
                     error = tool_response["error"]
-                    error_msg = error.get("message", "Unknown error")
-                    if self._action_callback:
-                        self._action_callback(
-                            "resource", uri, {"params": params}, error_msg, True
-                        )
                     return {
                         "contents": [{
                             "uri": uri,
                             "mimeType": "application/json",
-                            "text": json.dumps({"error": error_msg}, indent=2),
+                            "text": json.dumps({"error": error.get("message", "Unknown error")}, separators=(",", ":")),
                         }],
                         "isError": True,
                     }
 
                 result = tool_response.get("result") if tool_response else None
-                if self._action_callback:
-                    self._action_callback(
-                        "resource", uri, {"params": params}, result, False
-                    )
                 return {
                     "contents": [{
                         "uri": uri,
                         "mimeType": "application/json",
-                        "text": json.dumps(result, indent=2),
+                        "text": json.dumps(result, separators=(",", ":")),
                     }]
                 }
 
         # No matching resource found
         available: list[str] = [getattr(f, "__resource_uri__") for f in self.resources.methods.values()]
-        if self._action_callback:
-            self._action_callback(
-                "resource", uri, None, f"Resource not found: {uri}", True
-            )
         return {
             "contents": [{
                 "uri": uri,
@@ -745,7 +782,7 @@ class McpServer:
                 "text": json.dumps({
                     "error": f"Resource not found: {uri}",
                     "available_patterns": available,
-                }, indent=2),
+                }, separators=(",", ":")),
             }],
             "isError": True,
         }
@@ -787,7 +824,7 @@ class McpServer:
 
         # Convert non-string results to JSON
         if not isinstance(result, str):
-            result = json.dumps(result, indent=2)
+            result = json.dumps(result, separators=(",", ":"))
         return {
             "messages": [
                 {
@@ -833,6 +870,9 @@ class McpServer:
 
     def _type_to_json_schema(self, py_type: Any) -> dict:
         """Convert Python type hint to JSON schema object"""
+        if py_type is Any:
+            return {}
+
         origin = get_origin(py_type)
         # Annotated[T, "description"]
         if origin is Annotated:
@@ -863,10 +903,6 @@ class McpServer:
                 "type": "object",
                 "additionalProperties": self._type_to_json_schema(get_args(py_type)[1]),
             }
-
-        # Literal["a", "b", "c"] -> enum
-        if origin is Literal:
-            return {"type": "string", "enum": list(get_args(py_type))}
 
         # TypedDict
         if is_typeddict(py_type):
